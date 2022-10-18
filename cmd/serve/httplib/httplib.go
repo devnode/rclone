@@ -14,6 +14,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -112,6 +113,7 @@ certificate authority certificate.
 
 // Options contains options for the http Server
 type Options struct {
+	Network            string        // Listener network - tcp/unix
 	ListenAddr         string        // Port to listen on
 	BaseURL            string        // prefix to strip from URLs
 	ServerReadTimeout  time.Duration // Timeout for server reading data
@@ -136,6 +138,7 @@ type AuthFn func(user, pass string) (value interface{}, err error)
 
 // DefaultOpt is the default values used for Options
 var DefaultOpt = Options{
+	Network:            "tcp",
 	ListenAddr:         "localhost:8080",
 	Realm:              "rclone",
 	ServerReadTimeout:  1 * time.Hour,
@@ -319,13 +322,25 @@ func NewServer(handler http.Handler, opt *Options) *Server {
 // the listener was not started; does not block, so
 // use s.Wait() to block on the listener indefinitely.
 func (s *Server) Serve() error {
-	ln, err := net.Listen("tcp", s.httpServer.Addr)
+	ln, err := net.Listen(s.Opt.Network, s.Opt.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("start server failed: %w", err)
 	}
 	s.listener = ln
 	s.waitChan = make(chan struct{})
 	go func() {
+		defer func() {
+			fmt.Println("HELLO?", s.Opt.Network)
+			if s.Opt.Network != "unix" {
+				return
+			}
+
+			err := os.Remove(s.Opt.ListenAddr)
+			if err != nil {
+				log.Printf("Error on closing HTTP server: %v", err)
+				return
+			}
+		}()
 		var err error
 		if s.useSSL {
 			// hacky hack to get this to work with old Go versions, which
@@ -375,6 +390,10 @@ func (s *Server) Close() {
 
 // URL returns the serving address of this server
 func (s *Server) URL() string {
+	if s.Opt.Network == "unix" {
+		return fmt.Sprintf("unix:%s", s.Opt.ListenAddr)
+	}
+
 	proto := "http"
 	if s.useSSL {
 		proto = "https"

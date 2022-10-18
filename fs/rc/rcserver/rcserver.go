@@ -191,22 +191,24 @@ func (s *Server) handler(w http.ResponseWriter, r *http.Request) {
 	}
 	path := strings.TrimLeft(urlPath, "/")
 
-	allowOrigin := rcflags.Opt.AccessControlAllowOrigin
-	if allowOrigin != "" {
-		onlyOnceWarningAllowOrigin.Do(func() {
-			if allowOrigin == "*" {
-				fs.Logf(nil, "Warning: Allow origin set to *. This can cause serious security problems.")
-			}
-		})
-		w.Header().Add("Access-Control-Allow-Origin", allowOrigin)
-	} else {
-		w.Header().Add("Access-Control-Allow-Origin", s.URL())
-	}
+	if s.Opt.Network == "tcp" {
+		allowOrigin := rcflags.Opt.AccessControlAllowOrigin
+		if allowOrigin != "" {
+			onlyOnceWarningAllowOrigin.Do(func() {
+				if allowOrigin == "*" {
+					fs.Logf(nil, "Warning: Allow origin set to *. This can cause serious security problems.")
+				}
+			})
+			w.Header().Add("Access-Control-Allow-Origin", allowOrigin)
+		} else {
+			w.Header().Add("Access-Control-Allow-Origin", s.URL())
+		}
 
-	// echo back access control headers client needs
-	//reqAccessHeaders := r.Header.Get("Access-Control-Request-Headers")
-	w.Header().Add("Access-Control-Request-Method", "POST, OPTIONS, GET, HEAD")
-	w.Header().Add("Access-Control-Allow-Headers", "authorization, Content-Type")
+		// echo back access control headers client needs
+		//reqAccessHeaders := r.Header.Get("Access-Control-Request-Headers")
+		w.Header().Add("Access-Control-Request-Method", "POST, OPTIONS, GET, HEAD")
+		w.Header().Add("Access-Control-Allow-Headers", "authorization, Content-Type")
+	}
 
 	switch r.Method {
 	case "POST":

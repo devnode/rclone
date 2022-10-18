@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -25,6 +26,7 @@ import (
 var (
 	noOutput  = false
 	url       = "http://localhost:5572/"
+	unix      = ""
 	jsonInput = ""
 	authUser  = ""
 	authPass  = ""
@@ -38,6 +40,7 @@ func init() {
 	cmdFlags := commandDefinition.Flags()
 	flags.BoolVarP(cmdFlags, &noOutput, "no-output", "", noOutput, "If set, don't output the JSON result")
 	flags.StringVarP(cmdFlags, &url, "url", "", url, "URL to connect to rclone remote control")
+	flags.StringVarP(cmdFlags, &unix, "unix", "", unix, "path to unix socket")
 	flags.StringVarP(cmdFlags, &jsonInput, "json", "", jsonInput, "Input JSON - use instead of key=value args")
 	flags.StringVarP(cmdFlags, &authUser, "user", "", "", "Username to use to rclone remote control")
 	flags.StringVarP(cmdFlags, &authPass, "pass", "", "", "Password to use to connect to rclone remote control")
@@ -180,7 +183,19 @@ func doCall(ctx context.Context, path string, in rc.Params) (out rc.Params, err 
 
 	// Do HTTP request
 	client := fshttp.NewClient(ctx)
-	url += path
+
+	if len(unix) > 0 {
+		client.Transport = &http.Transport{
+			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+				return net.Dial("unix", unix)
+			},
+		}
+		url = "http://localhost/" + path
+
+	} else {
+		url += path
+	}
+
 	data, err := json.Marshal(in)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode JSON: %w", err)

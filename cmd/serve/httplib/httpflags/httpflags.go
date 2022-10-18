@@ -16,7 +16,8 @@ var (
 // AddFlagsPrefix adds flags for the httplib
 func AddFlagsPrefix(flagSet *pflag.FlagSet, prefix string, Opt *httplib.Options) {
 	rc.AddOption(prefix+"http", &Opt)
-	flags.StringVarP(flagSet, &Opt.ListenAddr, prefix+"addr", "", Opt.ListenAddr, "IPaddress:Port or :Port to bind server to")
+	flags.StringVarP(flagSet, &Opt.Network, prefix+"net", "", Opt.Network, "Network to listen on: tcp (default) or unix")
+	flags.StringVarP(flagSet, &Opt.ListenAddr, prefix+"addr", "", Opt.ListenAddr, "Listen address: IPaddress:Port, :Port or /path/to/unix.socket")
 	flags.DurationVarP(flagSet, &Opt.ServerReadTimeout, prefix+"server-read-timeout", "", Opt.ServerReadTimeout, "Timeout for server reading data")
 	flags.DurationVarP(flagSet, &Opt.ServerWriteTimeout, prefix+"server-write-timeout", "", Opt.ServerWriteTimeout, "Timeout for server writing data")
 	flags.IntVarP(flagSet, &Opt.MaxHeaderBytes, prefix+"max-header-bytes", "", Opt.MaxHeaderBytes, "Maximum size of request header")
