@@ -14,7 +14,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -329,18 +328,6 @@ func (s *Server) Serve() error {
 	s.listener = ln
 	s.waitChan = make(chan struct{})
 	go func() {
-		defer func() {
-			fmt.Println("HELLO?", s.Opt.Network)
-			if s.Opt.Network != "unix" {
-				return
-			}
-
-			err := os.Remove(s.Opt.ListenAddr)
-			if err != nil {
-				log.Printf("Error on closing HTTP server: %v", err)
-				return
-			}
-		}()
 		var err error
 		if s.useSSL {
 			// hacky hack to get this to work with old Go versions, which

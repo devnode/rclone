@@ -4,6 +4,7 @@ package rcd
 import (
 	"context"
 	"log"
+	"os"
 	"sync"
 
 	sysdnotify "github.com/iguanesolutions/go-systemd/v5/notify"
@@ -57,6 +58,15 @@ See the [rc documentation](/rc/) for more info on the rc flags.
 		finalise := func() {
 			finaliseOnce.Do(func() {
 				_ = sysdnotify.Stopping()
+
+				if s.Opt.Network == "unix" {
+					log.Print("HELLO?")
+					err := os.Remove(s.Opt.ListenAddr)
+					if err != nil {
+						log.Printf("Error on closing HTTP server: %v", err)
+						return
+					}
+				}
 			})
 		}
 		fnHandle := atexit.Register(finalise)
