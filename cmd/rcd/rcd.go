@@ -5,6 +5,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"strings"
 	"sync"
 
 	sysdnotify "github.com/iguanesolutions/go-systemd/v5/notify"
@@ -13,6 +14,7 @@ import (
 	"github.com/rclone/rclone/fs/rc/rcserver"
 	"github.com/rclone/rclone/lib/atexit"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 func init() {
@@ -47,6 +49,14 @@ See the [rc documentation](/rc/) for more info on the rc flags.
 		if v, ok := cfg.GetValue("network"); ok {
 			log.Printf("network: %v", v)
 		}
+
+		// pflag.Visit only detects environment vars
+		pflag.VisitAll(func(flag *pflag.Flag) {
+			if !flag.Changed || !strings.HasPrefix(flag.Name, "rc") {
+				return
+			}
+			log.Printf("[VISITALL] name=%q wasChanged=%t", flag.Name, flag.Changed)
+		})
 
 		return
 
