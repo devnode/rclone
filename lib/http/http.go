@@ -7,10 +7,10 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -97,7 +97,9 @@ type Server interface {
 	Router() chi.Router
 	Route(pattern string, fn func(r chi.Router)) chi.Router
 	Mount(pattern string, h http.Handler)
+	Serve()
 	Shutdown() error
+	Wait()
 }
 
 type server struct {
@@ -187,7 +189,7 @@ func NewServer(listeners, tlsListeners []net.Listener, opt Options) (Server, err
 			return nil, err
 		}
 		certpool := x509.NewCertPool()
-		pem, err := ioutil.ReadFile(opt.ClientCA)
+		pem, err := os.ReadFile(opt.ClientCA)
 		if err != nil {
 			log.Fatalf("Failed to read client certificate authority: %v", err)
 			return nil, err
