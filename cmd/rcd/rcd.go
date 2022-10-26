@@ -39,6 +39,17 @@ See the [rc documentation](/rc/) for more info on the rc flags.
 			log.Fatalf("Don't supply --rc flag when using rcd")
 		}
 
+		cfg, err := NewConfig()
+		if err != nil && !os.IsNotExist(err) {
+			log.Fatalf("Failed to parse rcd config: %v", err)
+		}
+
+		if v, ok := cfg.GetValue("network"); ok {
+			log.Printf("network: %v", v)
+		}
+
+		return
+
 		// Start the rc
 		rcflags.Opt.Enabled = true
 		if len(args) > 0 {
@@ -60,10 +71,9 @@ See the [rc documentation](/rc/) for more info on the rc flags.
 				_ = sysdnotify.Stopping()
 
 				if s.Opt.Network == "unix" {
-					log.Print("HELLO?")
 					err := os.Remove(s.Opt.ListenAddr)
 					if err != nil {
-						log.Printf("Error on closing HTTP server: %v", err)
+						log.Printf("Error removing socket: %v", err)
 						return
 					}
 				}
