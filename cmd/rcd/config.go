@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"sync"
+	"time"
 
 	"github.com/Unknwon/goconfig"
 	"github.com/rclone/rclone/fs"
@@ -147,8 +149,6 @@ func (s *Config) init(target interface{}, prefix string) {
 
 		if prefix, ok := field.Tag.Lookup("prefix"); ok {
 			// RECURSION
-			// target := t.Field(i)
-			// fmt.Println(prefix, target.NumField(), target.CanAddr())
 			s.init(t.Field(i), prefix)
 			continue
 		}
@@ -167,15 +167,32 @@ func (s *Config) init(target interface{}, prefix string) {
 			continue
 		}
 
-		// fmt.Printf("%d. %v (%v), tag: '%v'\n", i+1, field.Name, field.Type.Name(), tag)
 		flag := pflag.Lookup(tag)
 		if flag == nil || flag.Changed {
 			continue
 		}
 
-		// t.Field(i).Set()
+		f := t.Field(i)
+		if !f.CanSet() {
+			continue
+		}
 
-		fmt.Println(flag.Name, flag.Changed, field.Type.Name(), value)
+		// fmt.Println(flag.Name, f.CanSet(), field.Type.String(), value)
+
+		switch field.Type.String() {
+		case "string":
+			f.SetString(value)
+
+		case "int":
+			if v, err := strconv.Atoi(value); err == nil {
+				f.SetInt(int64(v))
+			}
+
+		case "time.Duration":
+			if d, err := time.ParseDuration(value); err == nil {
+				f.SetInt(int64(d))
+			}
+		}
 	}
 }
 
