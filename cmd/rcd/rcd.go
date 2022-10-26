@@ -3,10 +3,8 @@ package rcd
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"os"
-	"strings"
 	"sync"
 
 	sysdnotify "github.com/iguanesolutions/go-systemd/v5/notify"
@@ -15,7 +13,6 @@ import (
 	"github.com/rclone/rclone/fs/rc/rcserver"
 	"github.com/rclone/rclone/lib/atexit"
 	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 )
 
 func init() {
@@ -51,18 +48,18 @@ See the [rc documentation](/rc/) for more info on the rc flags.
 			log.Printf("network: %v", v)
 		}
 
-		var count int
-		// pflag.Visit only detects environment vars
-		pflag.VisitAll(func(flag *pflag.Flag) {
-			count++
-			if !strings.HasPrefix(flag.Name, "rc") {
-				return
-			}
-			// log.Printf("[VISITALL] name=%q", flag.Name)
-			fmt.Println(flag.Name)
-		})
+		// var count int
+		// // pflag.Visit only detects environment vars
+		// pflag.VisitAll(func(flag *pflag.Flag) {
+		// 	count++
+		// 	if !strings.HasPrefix(flag.Name, "rc") {
+		// 		return
+		// 	}
+		// 	// log.Printf("[VISITALL] name=%q", flag.Name)
+		// 	fmt.Println(flag.Name)
+		// })
 
-		log.Fatalf("TOTAL FLAGS: %d", count)
+		// log.Fatalf("TOTAL FLAGS: %d", count)
 
 		return
 

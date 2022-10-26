@@ -20,7 +20,6 @@ import (
 	"github.com/rclone/rclone/fs/config/flags"
 	"github.com/rclone/rclone/fs/fshttp"
 	"github.com/rclone/rclone/fs/rc"
-	"github.com/rclone/rclone/fs/rc/jobs"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -32,7 +31,6 @@ var (
 	jsonInput = ""
 	authUser  = ""
 	authPass  = ""
-	loopback  = false
 	options   []string
 	arguments []string
 )
@@ -41,12 +39,7 @@ func init() {
 	cmd.Root.AddCommand(commandDefinition)
 	cmdFlags := commandDefinition.Flags()
 	flags.BoolVarP(cmdFlags, &noOutput, "no-output", "", noOutput, "If set, don't output the JSON result")
-	flags.StringVarP(cmdFlags, &url, "url", "", url, "URL to connect to rclone remote control")
-	flags.StringVarP(cmdFlags, &unix, "unix", "", unix, "path to unix socket")
 	flags.StringVarP(cmdFlags, &jsonInput, "json", "", jsonInput, "Input JSON - use instead of key=value args")
-	flags.StringVarP(cmdFlags, &authUser, "user", "", "", "Username to use to rclone remote control")
-	flags.StringVarP(cmdFlags, &authPass, "pass", "", "", "Password to use to connect to rclone remote control")
-	flags.BoolVarP(cmdFlags, &loopback, "loopback", "", false, "If set connect to this rclone instance not via HTTP")
 	flags.StringArrayVarP(cmdFlags, &options, "opt", "o", options, "Option in the form name=value or name placed in the \"opt\" array")
 	flags.StringArrayVarP(cmdFlags, &arguments, "arg", "a", arguments, "Argument placed in the \"arg\" array")
 }
@@ -114,16 +107,23 @@ Use ` + "`rclone rc`" + ` to see a list of all possible commands.`,
 				log.Fatalf("Failed to parse rcd config: %v", err)
 			}
 
-			if len(args) == 0 {
+			if len(args) <= 1 {
 				return list(ctx)
 			}
 
-			opts, err := cfg.GetSection(args[0])
+			target, args := args[0], args[1:]
+			opts, err := cfg.GetSection(target)
 			if err != nil {
 				log.Fatalf("Unknown daemon: %s", args[0])
 			}
 
 			log.Printf("opts: %v", opts)
+
+			var count int
+			command.Flags().VisitAll(func(f *pflag.Flag) {
+				count++
+			})
+			fmt.Println("flags total: ", count)
 
 			// if v, ok := cfg.GetValue("DEFAULT", "network"); ok {
 			// 	log.Println("network", v)
@@ -189,24 +189,6 @@ func setAlternateFlag(flagName string, output *string) {
 //
 // if err is set, out may be a valid error return or it may be nil
 func doCall(ctx context.Context, path string, in rc.Params) (out rc.Params, err error) {
-	// If loopback set, short circuit HTTP request
-	if loopback {
-		call := rc.Calls.Get(path)
-		if call == nil {
-			return nil, fmt.Errorf("method %q not found", path)
-		}
-		_, out, err := jobs.NewJob(ctx, call.Fn, in)
-		if err != nil {
-			return nil, fmt.Errorf("loopback call failed: %w", err)
-		}
-		// Reshape (serialize then deserialize) the data so it is in the form expected
-		err = rc.Reshape(&out, out)
-		if err != nil {
-			return nil, fmt.Errorf("loopback reshape failed: %w", err)
-		}
-		return out, nil
-	}
-
 	// Do HTTP request
 	client := fshttp.NewClient(ctx)
 

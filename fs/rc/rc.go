@@ -18,20 +18,20 @@ import (
 
 // Options contains options for the remote control server
 type Options struct {
-	HTTPOptions              httplib.Options
-	Enabled                  bool   // set to enable the server
-	Serve                    bool   // set to serve files from remotes
-	Files                    string // set to enable serving files locally
-	NoAuth                   bool   // set to disable auth checks on AuthRequired methods
-	WebUI                    bool   // set to launch the web ui
-	WebGUIUpdate             bool   // set to check new update
-	WebGUIForceUpdate        bool   // set to force download new update
-	WebGUINoOpenBrowser      bool   // set to disable auto opening browser
-	WebGUIFetchURL           string // set the default url for fetching webgui
-	AccessControlAllowOrigin string // set the access control for CORS configuration
-	EnableMetrics            bool   // set to disable prometheus metrics on /metrics
-	JobExpireDuration        time.Duration
-	JobExpireInterval        time.Duration
+	HTTPOptions              httplib.Options `prefix:"rc-"`
+	Enabled                  bool            `flag:"rc"`                         // set to enable the server
+	Serve                    bool            `flag:"rc-serve"`                   // set to serve files from remotes
+	Files                    string          `flag:"rc-files"`                   // set to enable serving files locally
+	NoAuth                   bool            `flag:"rc-no-auth"`                 // set to disable auth checks on AuthRequired methods
+	WebUI                    bool            `flag:"rc-web-gui"`                 // set to launch the web ui
+	WebGUIUpdate             bool            `flag:"rc-web-gui-update"`          // set to check new update
+	WebGUIForceUpdate        bool            `flag:"rc-web-gui-force-update"`    // set to force download new update
+	WebGUINoOpenBrowser      bool            `flag:"rc-web-gui-no-open-browser"` // set to disable auto opening browser
+	WebGUIFetchURL           string          `flag:"rc-web-fetch-url"`           // set the default url for fetching webgui
+	AccessControlAllowOrigin string          `flag:"rc-allow-origin"`            // set the access control for CORS configuration
+	EnableMetrics            bool            `flag:"rc-enable-metrics"`          // set to disable prometheus metrics on /metrics
+	JobExpireDuration        time.Duration   `flag:"rc-job-expire-duration"`
+	JobExpireInterval        time.Duration   `flag:"rc-job-expire-interval"`
 }
 
 // DefaultOpt is the default values used for Options

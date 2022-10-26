@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 
 	"github.com/Unknwon/goconfig"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config"
+	"github.com/rclone/rclone/fs/rc/rcflags"
+	"github.com/spf13/pflag"
 )
 
 const configFile = "rcd.conf"
@@ -26,7 +30,10 @@ func NewConfig() (*Config, error) {
 
 	fmt.Println(s.path)
 
-	return s, s.Load()
+	s.Load()
+	s.init(&rcflags.Opt, "")
+
+	return s, nil
 }
 
 type Config struct {
@@ -110,6 +117,66 @@ func (s *Config) GetValue(section string, key string) (value string, found bool)
 		return "", false
 	}
 	return value, true
+}
+
+// TODO: fix this up
+func (s *Config) init(target interface{}, prefix string) {
+	values, err := s.gc.GetSection("DEFAULT")
+	if err != nil {
+		log.Fatalf("bad stuff: %s", err)
+	}
+
+	if len(values) == 0 {
+		return
+	}
+
+	var t reflect.Value
+
+	if v, ok := target.(reflect.Value); ok {
+		t = v
+	} else {
+		t = reflect.ValueOf(target).Elem()
+		if !t.CanAddr() {
+			log.Println("can't addr, skipping...")
+			return
+		}
+	}
+
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Type().Field(i)
+
+		if prefix, ok := field.Tag.Lookup("prefix"); ok {
+			// RECURSION
+			// target := t.Field(i)
+			// fmt.Println(prefix, target.NumField(), target.CanAddr())
+			s.init(t.Field(i), prefix)
+			continue
+		}
+
+		tag, ok := field.Tag.Lookup("flag")
+		if !ok {
+			continue
+		}
+
+		if prefix != "" {
+			tag = prefix + tag
+		}
+
+		value, ok := values[tag]
+		if !ok {
+			continue
+		}
+
+		// fmt.Printf("%d. %v (%v), tag: '%v'\n", i+1, field.Name, field.Type.Name(), tag)
+		flag := pflag.Lookup(tag)
+		if flag == nil || flag.Changed {
+			continue
+		}
+
+		// t.Field(i).Set()
+
+		fmt.Println(flag.Name, flag.Changed, field.Type.Name(), value)
+	}
 }
 
 // rc

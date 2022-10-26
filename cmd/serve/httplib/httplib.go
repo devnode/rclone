@@ -112,21 +112,21 @@ certificate authority certificate.
 
 // Options contains options for the http Server
 type Options struct {
-	Network            string        // Listener network - tcp/unix
-	ListenAddr         string        // Port to listen on
-	BaseURL            string        // prefix to strip from URLs
-	ServerReadTimeout  time.Duration // Timeout for server reading data
-	ServerWriteTimeout time.Duration // Timeout for server writing data
-	MaxHeaderBytes     int           // Maximum size of request header
-	SslCert            string        // SSL PEM key (concatenation of certificate and CA certificate)
-	SslKey             string        // SSL PEM Private key
-	ClientCA           string        // Client certificate authority to verify clients with
-	HtPasswd           string        // htpasswd file - if not provided no authentication is done
-	Realm              string        // realm for authentication
-	BasicUser          string        // single username for basic auth if not using Htpasswd
-	BasicPass          string        // password for BasicUser
-	Auth               AuthFn        `json:"-"` // custom Auth (not set by command line flags)
-	Template           string        // User specified template
+	Network            string        `flag:"net"`                  // Listener network - tcp/unix
+	ListenAddr         string        `flag:"addr"`                 // Port to listen on
+	BaseURL            string        `flag:"baseurl"`              // prefix to strip from URLs
+	ServerReadTimeout  time.Duration `flag:"server-read-timeout"`  // Timeout for server reading data
+	ServerWriteTimeout time.Duration `flag:"server-write-timeout"` // Timeout for server writing data
+	MaxHeaderBytes     int           `flag:"max-header-bytes"`     // Maximum size of request header
+	SslCert            string        `flag:"cert"`                 // SSL PEM key (concatenation of certificate and CA certificate)
+	SslKey             string        `flag:"key"`                  // SSL PEM Private key
+	ClientCA           string        `flag:"client-ca"`            // Client certificate authority to verify clients with
+	HtPasswd           string        `flag:"htpasswd"`             // htpasswd file - if not provided no authentication is done
+	Realm              string        `flag:"realm"`                // realm for authentication
+	BasicUser          string        `flag:"user"`                 // single username for basic auth if not using Htpasswd
+	BasicPass          string        `flag:"pass"`                 // password for BasicUser
+	Auth               AuthFn        `json:"-"`                    // custom Auth (not set by command line flags)
+	Template           string        `flag:"template"`             // User specified template
 }
 
 // AuthFn if used will be used to authenticate user, pass. If an error
