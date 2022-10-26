@@ -85,6 +85,13 @@ func (s *Config) GetSectionList() []string {
 	return s.gc.GetSectionList()
 }
 
+func (s *Config) GetSection(section string) (map[string]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.gc.GetSection(section)
+}
+
 // GetKeyList returns the keys in this section
 func (s *Config) GetKeyList(section string) []string {
 	s.mu.Lock()
@@ -93,8 +100,8 @@ func (s *Config) GetKeyList(section string) []string {
 	return s.gc.GetKeyList(section)
 }
 
-// GetSectionValue returns the key in section with a found flag
-func (s *Config) GetSectionValue(section string, key string) (value string, found bool) {
+// GetValue returns the key in section with a found flag
+func (s *Config) GetValue(section string, key string) (value string, found bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -105,6 +112,30 @@ func (s *Config) GetSectionValue(section string, key string) (value string, foun
 	return value, true
 }
 
-func (s *Config) GetValue(key string) (value string, found bool) {
-	return s.GetSectionValue("", key)
-}
+// rc
+// rc-addr
+// rc-allow-origin
+// rc-baseurl
+// rc-cert
+// rc-client-ca
+// rc-enable-metrics
+// rc-files
+// rc-htpasswd
+// rc-job-expire-duration
+// rc-job-expire-interval
+// rc-key
+// rc-max-header-bytes
+// rc-net
+// rc-no-auth
+// rc-pass
+// rc-realm
+// rc-serve
+// rc-server-read-timeout
+// rc-server-write-timeout
+// rc-template
+// rc-user
+// rc-web-fetch-url
+// rc-web-gui
+// rc-web-gui-force-update
+// rc-web-gui-no-open-browser
+// rc-web-gui-update

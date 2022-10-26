@@ -3,6 +3,7 @@ package rcd
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -46,17 +47,22 @@ See the [rc documentation](/rc/) for more info on the rc flags.
 			log.Fatalf("Failed to parse rcd config: %v", err)
 		}
 
-		if v, ok := cfg.GetValue("network"); ok {
+		if v, ok := cfg.GetValue("", "network"); ok {
 			log.Printf("network: %v", v)
 		}
 
+		var count int
 		// pflag.Visit only detects environment vars
 		pflag.VisitAll(func(flag *pflag.Flag) {
-			if !flag.Changed || !strings.HasPrefix(flag.Name, "rc") {
+			count++
+			if !strings.HasPrefix(flag.Name, "rc") {
 				return
 			}
-			log.Printf("[VISITALL] name=%q wasChanged=%t", flag.Name, flag.Changed)
+			// log.Printf("[VISITALL] name=%q", flag.Name)
+			fmt.Println(flag.Name)
 		})
+
+		log.Fatalf("TOTAL FLAGS: %d", count)
 
 		return
 
