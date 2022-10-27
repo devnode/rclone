@@ -2,9 +2,9 @@
 package rcd2
 
 import (
-	"fmt"
 	"log"
 	"net"
+	"strings"
 	"sync"
 
 	sysdnotify "github.com/iguanesolutions/go-systemd/v5/notify"
@@ -12,23 +12,27 @@ import (
 	"github.com/rclone/rclone/fs/config/flags"
 	"github.com/rclone/rclone/lib/atexit"
 	libhttp "github.com/rclone/rclone/lib/http"
+	"github.com/rclone/rclone/lib/http/auth"
 	"github.com/spf13/cobra"
 )
 
 func init() {
 	flagSet := commandDefinition.Flags()
 
-	libhttp.AddFlagsPrefix(flagSet, "rcd2", &HTTPOptions)
-
 	flags.StringArrayVarP(flagSet, &addresses, "rcd2-addrs", "", addresses, "list of addresses")
+
+	libhttp.AddFlagsPrefix(flagSet, "rcd2-", &HTTPOptions)
+	auth.AddFlagsPrefix(flagSet, "rcd2-", &AuthOptions)
 
 	cmd.Root.AddCommand(commandDefinition)
 }
 
 var (
-	addresses   []string
-	listeners   []net.Listener
-	HTTPOptions = libhttp.DefaultOpt
+	addresses    []string
+	listeners    []net.Listener
+	tlsListeners []net.Listener
+	AuthOptions  auth.Options
+	HTTPOptions  = libhttp.DefaultOpt
 )
 
 var commandDefinition = &cobra.Command{
@@ -58,29 +62,37 @@ See the [rc documentation](/rc/) for more info on the rc flags.
 		// }
 
 		for _, aa := range addresses {
+			target := &listeners
+			if strings.HasPrefix(aa, "tls://") {
+				aa = strings.TrimPrefix(aa, "tls://")
+				target = &tlsListeners
+			}
+
 			l, err := NewListener(aa)
 			if err != nil {
 				log.Fatalf("invalid address %q: %v", aa, err)
 			}
-			fmt.Println(l.Addr())
-			listeners = append(listeners, l)
+			// keep this so unix sockets get cleaned up on early exit
+			defer l.Close()
+
+			*target = append(*target, l)
 		}
 
-		server, err := libhttp.NewServer(listeners, nil, HTTPOptions)
+		s, err := libhttp.NewServer(listeners, tlsListeners, HTTPOptions)
 		if err != nil {
 			log.Fatalf("error starting server: %v", err)
 		}
 
-		server.Mount("/", Handler())
+		s.Mount("/", Handler())
 
-		server.Serve()
+		s.Serve()
 
 		// Notify stopping on exit
 		var finaliseOnce sync.Once
 		finalise := func() {
 			finaliseOnce.Do(func() {
 				_ = sysdnotify.Stopping()
-				err := server.Shutdown()
+				err := s.Shutdown()
 				if err != nil {
 					log.Printf("error shutting down server: %v", err)
 				}
@@ -94,7 +106,7 @@ See the [rc documentation](/rc/) for more info on the rc flags.
 			log.Fatalf("failed to notify ready to systemd: %v", err)
 		}
 
-		server.Wait()
+		s.Wait()
 		finalise()
 	},
 }
