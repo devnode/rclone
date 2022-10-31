@@ -2,11 +2,13 @@
 package rcd2
 
 import (
+	"context"
 	"log"
 	"sync"
 
 	sysdnotify "github.com/iguanesolutions/go-systemd/v5/notify"
 	"github.com/rclone/rclone/cmd"
+	"github.com/rclone/rclone/fs/rc/rcserver2"
 	"github.com/rclone/rclone/lib/atexit"
 	libhttp "github.com/rclone/rclone/lib/http2"
 	"github.com/rclone/rclone/lib/http2/auth"
@@ -53,14 +55,18 @@ See the [rc documentation](/rc/) for more info on the rc flags.
 		// 	rcflags.Opt.Files = args[0]
 		// }
 
+		ctx := context.Background()
+
 		s, err := libhttp.NewServer(HTTPOptions)
 		if err != nil {
 			log.Fatalf("error starting server: %v", err)
 		}
 
-		s.Mount("/", Handler())
+		rcs := rcserver2.New(ctx, s, nil)
 
 		s.Serve()
+
+		rcs.OpenURL()
 
 		// Notify stopping on exit
 		var finaliseOnce sync.Once

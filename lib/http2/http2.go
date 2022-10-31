@@ -100,6 +100,7 @@ type Server interface {
 	Mount(pattern string, h http.Handler)
 	Serve()
 	Shutdown() error
+	URLs() []string
 	Wait()
 }
 
@@ -262,7 +263,7 @@ func NewServer(opt Options) (Server, error) {
 				ReadHeaderTimeout: 10 * time.Second, // time to send the headers
 				IdleTimeout:       60 * time.Second, // time to keep idle connections open
 				TLSConfig:         tlsCfg,
-				BaseContext:       NewBaseContext(opt.BaseURL, tlsCfg != nil),
+				BaseContext:       NewBaseContext(url, tlsCfg != nil),
 			},
 		}
 
@@ -311,6 +312,17 @@ func (s *server) Shutdown() error {
 	}
 	s.wg.Wait()
 	return nil
+}
+
+func (s *server) URLs() []string {
+	var out []string
+	for _, ii := range s.instances {
+		if ii.listener.Addr().Network() == "unix" {
+			continue
+		}
+		out = append(out, ii.url)
+	}
+	return out
 }
 
 //---- Command line flags ----

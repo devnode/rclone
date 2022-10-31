@@ -12,8 +12,9 @@ import (
 type CtxKey string
 
 var (
-	CtxIsUnixSocket CtxKey = "CtxIsUnixSocket"
-	CtxPublicURL    CtxKey = "CtxPublicURL"
+	CtxIsAuthenticated CtxKey = "CtxIsAuthenticated"
+	CtxIsUnixSocket    CtxKey = "CtxIsUnixSocket"
+	CtxPublicURL       CtxKey = "CtxPublicURL"
 )
 
 func NewBaseContext(url string, useTLS bool) func(l net.Listener) context.Context {
@@ -28,6 +29,11 @@ func NewBaseContext(url string, useTLS bool) func(l net.Listener) context.Contex
 		ctx = context.WithValue(ctx, CtxPublicURL, url)
 		return ctx
 	}
+}
+
+func IsAuthenticated(r *http.Request) bool {
+	v, _ := r.Context().Value(CtxIsAuthenticated).(bool)
+	return v
 }
 
 func IsUnixSocket(r *http.Request) bool {
