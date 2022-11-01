@@ -62,16 +62,12 @@ See the [rc documentation](/rc/) for more info on the rc flags.
 
 		ctx := context.Background()
 
-		s, err := libhttp.NewServer(HTTPConfig, libhttp.WithAuth(&AuthOptions))
+		s, err := libhttp.NewServer(ctx, HTTPConfig, libhttp.WithAuth(&AuthOptions))
 		if err != nil {
 			log.Fatalf("error starting server: %v", err)
 		}
 
-		rcs := rcserver2.New(ctx, s, &rcflags.Opt)
-
-		s.Serve()
-
-		rcs.OpenURL()
+		_ = rcserver2.New(ctx, &rcflags.Opt, s)
 
 		// Notify stopping on exit
 		var finaliseOnce sync.Once

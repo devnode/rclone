@@ -145,7 +145,7 @@ func WithAuth(auth *auth.Options) Option {
 // This function is provided if the default http server does not meet a services requirements and should not generally be used
 // A http server can listen using multiple listeners. For example, a listener for port 80, and a listener for port 443.
 // tlsListeners are ignored if opt.TLSKey is not provided
-func NewServer(cfg Config, options ...Option) (Server, error) {
+func NewServer(ctx context.Context, cfg Config, options ...Option) (Server, error) {
 	s := &server{
 		mux: chi.NewRouter(),
 		cfg: cfg,
@@ -216,7 +216,7 @@ func NewServer(cfg Config, options ...Option) (Server, error) {
 				ReadHeaderTimeout: 10 * time.Second, // time to send the headers
 				IdleTimeout:       60 * time.Second, // time to keep idle connections open
 				TLSConfig:         tlsCfg,
-				BaseContext:       NewBaseContext(url, tlsCfg != nil),
+				BaseContext:       NewBaseContext(ctx, url),
 			},
 		}
 
@@ -231,8 +231,8 @@ func (s *server) initAuth() {
 		return
 	}
 
-	if s.auth.Auth != nil {
-		s.mux.Use(MiddlewareAuthCustom(s.auth.Auth, s.auth.Realm))
+	if s.auth.CustomAuthFn != nil {
+		s.mux.Use(MiddlewareAuthCustom(s.auth.CustomAuthFn, s.auth.Realm))
 		return
 	}
 
@@ -290,7 +290,7 @@ func (s *server) initTLS() error {
 		Certificates: []tls.Certificate{cert},
 	}
 
-	if s.cfg.ClientCA == "" {
+	if s.cfg.ClientCA != "" {
 		// if !useTLS {
 		// 	err := errors.New("can't use --client-ca without --cert and --key")
 		// 	log.Fatalf(err.Error())
@@ -302,7 +302,7 @@ func (s *server) initTLS() error {
 		}
 
 		if !certpool.AppendCertsFromPEM(pem) {
-			return errors.New("can't parse client certificate authority")
+			return errors.New("unable to parse client certificate authority")
 		}
 
 		s.tlsConfig.ClientCAs = certpool

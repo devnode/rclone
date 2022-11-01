@@ -41,12 +41,12 @@ type CustomAuthFn func(user, pass string) (value interface{}, err error)
 
 // Options contains options for the http authentication
 type Options struct {
-	HtPasswd  string       // htpasswd file - if not provided no authentication is done
-	Realm     string       // realm for authentication
-	BasicUser string       // single username for basic auth if not using Htpasswd
-	BasicPass string       // password for BasicUser
-	Salt      string       // password hashing salt
-	Auth      CustomAuthFn `json:"-"` // custom Auth (not set by command line flags)
+	HtPasswd     string       // htpasswd file - if not provided no authentication is done
+	Realm        string       // realm for authentication
+	BasicUser    string       // single username for basic auth if not using Htpasswd
+	BasicPass    string       // password for BasicUser
+	Salt         string       // password hashing salt
+	CustomAuthFn CustomAuthFn `json:"-"` // custom Auth (not set by command line flags)
 }
 
 // Options set by command line flags

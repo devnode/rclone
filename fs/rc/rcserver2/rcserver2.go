@@ -71,7 +71,7 @@ type RCServer struct {
 	HTMLTemplate   *template.Template
 }
 
-func New(ctx context.Context, server libhttp.Server, opt *rc.Options) *RCServer {
+func New(ctx context.Context, opt *rc.Options, server libhttp.Server) *RCServer {
 	var err error
 
 	s := &RCServer{
@@ -129,10 +129,13 @@ func New(ctx context.Context, server libhttp.Server, opt *rc.Options) *RCServer 
 	mux.Use(libhttp.MiddlewareCORS(opt.AccessControlAllowOrigin))
 	mux.HandleFunc("/", s.handler)
 
+	server.Serve()
+	s.OpenBrowser()
+
 	return s
 }
 
-func (s *RCServer) OpenURL() {
+func (s *RCServer) OpenBrowser() {
 	urls := s.server.URLs()
 	if s.files == nil || len(urls) == 0 {
 		return
@@ -170,6 +173,14 @@ func (s *RCServer) OpenURL() {
 	} else {
 		fs.Logf(nil, "Web GUI is not automatically opening browser. Navigate to %s to use.", openURL.String())
 	}
+}
+
+func (s *RCServer) Shutdown() error {
+	return s.server.Shutdown()
+}
+
+func (s *RCServer) Wait() {
+	s.server.Wait()
 }
 
 // writeError writes a formatted error to the output

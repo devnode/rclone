@@ -23,10 +23,8 @@ var (
 	ContextUserKey      CtxKey = "ContextUserKey"
 )
 
-func NewBaseContext(url string, useTLS bool) func(l net.Listener) context.Context {
+func NewBaseContext(ctx context.Context, url string) func(l net.Listener) context.Context {
 	return func(l net.Listener) context.Context {
-		ctx := context.Background()
-
 		if l.Addr().Network() == "unix" {
 			ctx = context.WithValue(ctx, ContextUnixSockKey, true)
 			return ctx
@@ -38,8 +36,13 @@ func NewBaseContext(url string, useTLS bool) func(l net.Listener) context.Contex
 }
 
 func IsAuthenticated(r *http.Request) bool {
-	v, _ := r.Context().Value(ContextIsAuthKey).(bool)
-	return v
+	if v := r.Context().Value(ContextAuthKey); v != nil {
+		return true
+	}
+	if v := r.Context().Value(ContextAuthKey); v != nil {
+		return true
+	}
+	return false
 }
 
 func IsUnixSocket(r *http.Request) bool {
@@ -105,26 +108,6 @@ func basicAuth(authenticator *LoggedBasicAuth) func(next http.Handler) http.Hand
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
-}
-
-func MiddlewareAuth(opt *auth.Options) Middleware {
-	if opt == nil {
-		return nil
-	}
-
-	if opt.Auth != nil {
-		return MiddlewareAuthCustom(opt.Auth, opt.Realm)
-	}
-
-	if opt.HtPasswd != "" {
-		return MiddlewareAuthHtpasswd(opt.HtPasswd, opt.Realm)
-	}
-
-	if opt.BasicUser != "" {
-		return MiddlewareAuthBasic(opt.BasicUser, opt.BasicPass, opt.Realm, opt.Salt)
-	}
-
-	return nil
 }
 
 // MiddlewareAuthHtpasswd instantiates middleware that authenticates against the passed htpasswd file
