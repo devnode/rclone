@@ -16,17 +16,12 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rclone/rclone/cmd/serve/http/data"
 	"github.com/rclone/rclone/fs"
-	"github.com/rclone/rclone/fs/accounting"
 	"github.com/rclone/rclone/fs/cache"
 	"github.com/rclone/rclone/fs/config"
-	"github.com/rclone/rclone/fs/fshttp"
 	"github.com/rclone/rclone/fs/list"
 	"github.com/rclone/rclone/fs/rc"
 	"github.com/rclone/rclone/fs/rc/jobs"
@@ -39,19 +34,18 @@ import (
 )
 
 var promHandler http.Handler
-var onlyOnceWarningAllowOrigin sync.Once
 
 func init() {
-	rcloneCollector := accounting.NewRcloneCollector(context.Background())
-	prometheus.MustRegister(rcloneCollector)
+	// rcloneCollector := accounting.NewRcloneCollector(context.Background())
+	// prometheus.MustRegister(rcloneCollector)
 
-	m := fshttp.NewMetrics("rclone")
-	for _, c := range m.Collectors() {
-		prometheus.MustRegister(c)
-	}
-	fshttp.DefaultMetrics = m
+	// m := fshttp.NewMetrics("rclone")
+	// for _, c := range m.Collectors() {
+	// 	prometheus.MustRegister(c)
+	// }
+	// fshttp.DefaultMetrics = m
 
-	promHandler = promhttp.Handler()
+	// promHandler = promhttp.Handler()
 }
 
 // Start the remote control server if configured
@@ -140,7 +134,7 @@ func New(ctx context.Context, server libhttp.Server, opt *rc.Options) *RCServer 
 
 func (s *RCServer) OpenURL() {
 	urls := s.server.URLs()
-	if s.files == nil && len(urls) == 0 {
+	if s.files == nil || len(urls) == 0 {
 		return
 	}
 

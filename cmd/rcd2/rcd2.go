@@ -8,6 +8,7 @@ import (
 
 	sysdnotify "github.com/iguanesolutions/go-systemd/v5/notify"
 	"github.com/rclone/rclone/cmd"
+	"github.com/rclone/rclone/fs/rc/rcflags"
 	"github.com/rclone/rclone/fs/rc/rcserver2"
 	"github.com/rclone/rclone/lib/atexit"
 	libhttp "github.com/rclone/rclone/lib/http2"
@@ -15,8 +16,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const RC_DEFAULT_ADDR = "localhost:5572"
+
 func init() {
 	flagSet := commandDefinition.Flags()
+
+	HTTPOptions.Addrs = []string{RC_DEFAULT_ADDR}
 
 	libhttp.AddFlagsPrefix(flagSet, "rcd2-", &HTTPOptions)
 	auth.AddFlagsPrefix(flagSet, "rcd2-", &AuthOptions)
@@ -57,12 +62,12 @@ See the [rc documentation](/rc/) for more info on the rc flags.
 
 		ctx := context.Background()
 
-		s, err := libhttp.NewServer(HTTPOptions)
+		s, err := libhttp.NewServer(HTTPOptions, auth.Protect(AuthOptions))
 		if err != nil {
 			log.Fatalf("error starting server: %v", err)
 		}
 
-		rcs := rcserver2.New(ctx, s, nil)
+		rcs := rcserver2.New(ctx, s, &rcflags.Opt)
 
 		s.Serve()
 

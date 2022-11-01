@@ -140,7 +140,7 @@ func UseTLS(opt Options) bool {
 // This function is provided if the default http server does not meet a services requirements and should not generally be used
 // A http server can listen using multiple listeners. For example, a listener for port 80, and a listener for port 443.
 // tlsListeners are ignored if opt.TLSKey is not provided
-func NewServer(opt Options) (Server, error) {
+func NewServer(opt Options, middleware ...Middleware) (Server, error) {
 	s := &server{
 		mux:    chi.NewRouter(),
 		useTLS: UseTLS(opt),
@@ -222,6 +222,13 @@ func NewServer(opt Options) (Server, error) {
 
 	if opt.BaseURL != "" {
 		s.mux.Use(MiddlewareStripPrefix(opt.BaseURL))
+	}
+
+	for _, mm := range middleware {
+		if mm == nil {
+			continue
+		}
+		s.mux.Use(mm)
 	}
 
 	for _, addr := range opt.Addrs {

@@ -2,19 +2,25 @@ package http2
 
 import (
 	"context"
+	"encoding/base64"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 
+	goauth "github.com/abbot/go-http-auth"
 	"github.com/rclone/rclone/fs"
+	"github.com/rclone/rclone/lib/http2/auth"
 )
 
 type CtxKey string
 
 var (
-	CtxIsAuthenticated CtxKey = "CtxIsAuthenticated"
-	CtxIsUnixSocket    CtxKey = "CtxIsUnixSocket"
-	CtxPublicURL       CtxKey = "CtxPublicURL"
+	ContextAuthKey      CtxKey = "ContextAuthKey"
+	ContextIsAuthKey    CtxKey = "ContextIsAuthKey"
+	ContextUnixSockKey  CtxKey = "ContextUnixSockKey"
+	ContentPublicURLKey CtxKey = "ContentPublicURLKey"
+	ContextUserKey      CtxKey = "ContextUserKey"
 )
 
 func NewBaseContext(url string, useTLS bool) func(l net.Listener) context.Context {
@@ -22,28 +28,147 @@ func NewBaseContext(url string, useTLS bool) func(l net.Listener) context.Contex
 		ctx := context.Background()
 
 		if l.Addr().Network() == "unix" {
-			ctx = context.WithValue(ctx, CtxIsUnixSocket, true)
+			ctx = context.WithValue(ctx, ContextUnixSockKey, true)
 			return ctx
 		}
 
-		ctx = context.WithValue(ctx, CtxPublicURL, url)
+		ctx = context.WithValue(ctx, ContentPublicURLKey, url)
 		return ctx
 	}
 }
 
 func IsAuthenticated(r *http.Request) bool {
-	v, _ := r.Context().Value(CtxIsAuthenticated).(bool)
+	v, _ := r.Context().Value(ContextIsAuthKey).(bool)
 	return v
 }
 
 func IsUnixSocket(r *http.Request) bool {
-	v, _ := r.Context().Value(CtxIsUnixSocket).(bool)
+	v, _ := r.Context().Value(ContextUnixSockKey).(bool)
 	return v
 }
 
 func PublicURL(r *http.Request) string {
-	v, _ := r.Context().Value(CtxPublicURL).(string)
+	v, _ := r.Context().Value(ContentPublicURLKey).(string)
 	return v
+}
+
+// parseAuthorization parses the Authorization header into user, pass
+// it returns a boolean as to whether the parse was successful
+func parseAuthorization(r *http.Request) (user, pass string, ok bool) {
+	authHeader := r.Header.Get("Authorization")
+	if authHeader != "" {
+		s := strings.SplitN(authHeader, " ", 2)
+		if len(s) == 2 && s[0] == "Basic" {
+			b, err := base64.StdEncoding.DecodeString(s[1])
+			if err == nil {
+				parts := strings.SplitN(string(b), ":", 2)
+				user = parts[0]
+				if len(parts) > 1 {
+					pass = parts[1]
+					ok = true
+				}
+			}
+		}
+	}
+	return
+}
+
+type LoggedBasicAuth struct {
+	goauth.BasicAuth
+}
+
+// CheckAuth extends BasicAuth.CheckAuth to emit a log entry for unauthorised requests
+func (a *LoggedBasicAuth) CheckAuth(r *http.Request) string {
+	username := a.BasicAuth.CheckAuth(r)
+	if username == "" {
+		user, _, _ := parseAuthorization(r)
+		fs.Infof(r.URL.Path, "%s: Unauthorized request from %s", r.RemoteAddr, user)
+	}
+	return username
+}
+
+// NewLoggedBasicAuthenticator instantiates a new instance of LoggedBasicAuthenticator
+func NewLoggedBasicAuthenticator(realm string, secrets goauth.SecretProvider) *LoggedBasicAuth {
+	return &LoggedBasicAuth{BasicAuth: goauth.BasicAuth{Realm: realm, Secrets: secrets}}
+}
+
+// Helper to generate required interface for middleware
+func basicAuth(authenticator *LoggedBasicAuth) func(next http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			username := authenticator.CheckAuth(r)
+			if username == "" {
+				authenticator.RequireAuth(w, r)
+				return
+			}
+			ctx := context.WithValue(r.Context(), ContextUserKey, username)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+func MiddlewareAuth(opt auth.Options) Middleware {
+	if opt.Auth != nil {
+		return MiddlewareAuthCustom(opt.Auth, opt.Realm)
+	}
+
+	if opt.HtPasswd != "" {
+		return MiddlewareAuthHtpasswd(opt.HtPasswd, opt.Realm)
+	}
+
+	if opt.BasicUser != "" {
+		return MiddlewareAuthBasic(opt.BasicUser, opt.BasicPass, opt.Realm, opt.Salt)
+	}
+
+	return nil
+}
+
+// MiddlewareAuthHtpasswd instantiates middleware that authenticates against the passed htpasswd file
+func MiddlewareAuthHtpasswd(path, realm string) Middleware {
+	fs.Infof(nil, "Using %q as htpasswd storage", path)
+	secretProvider := goauth.HtpasswdFileProvider(path)
+	authenticator := NewLoggedBasicAuthenticator(realm, secretProvider)
+	return basicAuth(authenticator)
+}
+
+// MiddlewareAuthBasic instantiates middleware that authenticates for a single user
+func MiddlewareAuthBasic(user, pass, realm, salt string) Middleware {
+	fs.Infof(nil, "Using --user %s --pass XXXX as authenticated user", user)
+	pass = string(goauth.MD5Crypt([]byte(pass), []byte(salt), []byte("$1$")))
+	secretProvider := func(u, r string) string {
+		if user == u {
+			return pass
+		}
+		return ""
+	}
+	authenticator := NewLoggedBasicAuthenticator(realm, secretProvider)
+	return basicAuth(authenticator)
+}
+
+// MiddlewareAuthCustom instantiates middleware that authenticates using a custom function
+func MiddlewareAuthCustom(fn auth.CustomAuthFn, realm string) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			user, pass, ok := parseAuthorization(r)
+			if !ok {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			value, err := fn(user, pass)
+			if err != nil {
+				fs.Infof(r.URL.Path, "%s: Auth failed from %s: %v", r.RemoteAddr, user, err)
+				goauth.NewBasicAuthenticator(realm, func(user, realm string) string { return "" }).RequireAuth(w, r) //Reuse BasicAuth error reporting
+				return
+			}
+
+			if value != nil {
+				r = r.WithContext(context.WithValue(r.Context(), ContextAuthKey, value))
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 var onlyOnceWarningAllowOrigin sync.Once

@@ -3,7 +3,6 @@ package auth
 
 import (
 	"github.com/rclone/rclone/fs/config/flags"
-	"github.com/rclone/rclone/lib/http"
 	"github.com/spf13/pflag"
 )
 
@@ -48,18 +47,6 @@ type Options struct {
 	BasicPass string       // password for BasicUser
 	Salt      string       // password hashing salt
 	Auth      CustomAuthFn `json:"-"` // custom Auth (not set by command line flags)
-}
-
-// Auth instantiates middleware that authenticates users based on the configuration
-func Auth(opt Options) http.Middleware {
-	if opt.Auth != nil {
-		return CustomAuth(opt.Auth, opt.Realm)
-	} else if opt.HtPasswd != "" {
-		return HtPasswdAuth(opt.HtPasswd, opt.Realm)
-	} else if opt.BasicUser != "" {
-		return SingleAuth(opt.BasicUser, opt.BasicPass, opt.Realm, opt.Salt)
-	}
-	return nil
 }
 
 // Options set by command line flags
