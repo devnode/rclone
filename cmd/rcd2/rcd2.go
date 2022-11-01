@@ -21,9 +21,9 @@ const RC_DEFAULT_ADDR = "localhost:5572"
 func init() {
 	flagSet := commandDefinition.Flags()
 
-	HTTPOptions.Addrs = []string{RC_DEFAULT_ADDR}
+	HTTPConfig.Addrs = []string{RC_DEFAULT_ADDR}
 
-	libhttp.AddFlagsPrefix(flagSet, "rcd2-", &HTTPOptions)
+	libhttp.AddFlagsPrefix(flagSet, "rcd2-", &HTTPConfig)
 	auth.AddFlagsPrefix(flagSet, "rcd2-", &AuthOptions)
 
 	cmd.Root.AddCommand(commandDefinition)
@@ -31,7 +31,7 @@ func init() {
 
 var (
 	AuthOptions auth.Options
-	HTTPOptions = libhttp.DefaultOpt
+	HTTPConfig  = libhttp.DefaultCfg
 )
 
 var commandDefinition = &cobra.Command{
@@ -62,7 +62,7 @@ See the [rc documentation](/rc/) for more info on the rc flags.
 
 		ctx := context.Background()
 
-		s, err := libhttp.NewServer(HTTPOptions, auth.Protect(AuthOptions))
+		s, err := libhttp.NewServer(HTTPConfig, libhttp.WithAuth(&AuthOptions))
 		if err != nil {
 			log.Fatalf("error starting server: %v", err)
 		}

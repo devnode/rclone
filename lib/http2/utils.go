@@ -107,7 +107,11 @@ func basicAuth(authenticator *LoggedBasicAuth) func(next http.Handler) http.Hand
 	}
 }
 
-func MiddlewareAuth(opt auth.Options) Middleware {
+func MiddlewareAuth(opt *auth.Options) Middleware {
+	if opt == nil {
+		return nil
+	}
+
 	if opt.Auth != nil {
 		return MiddlewareAuthCustom(opt.Auth, opt.Realm)
 	}

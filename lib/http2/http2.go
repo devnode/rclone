@@ -18,6 +18,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/rclone/rclone/fs/config/flags"
+	"github.com/rclone/rclone/lib/http2/auth"
 	"github.com/spf13/pflag"
 )
 
@@ -69,8 +70,8 @@ certificate authority certificate.
 // Middleware function signature required by chi.Router.Use()
 type Middleware func(http.Handler) http.Handler
 
-// Options contains options for the http Server
-type Options struct {
+// Config contains options for the http Server
+type Config struct {
 	Addrs              []string      // Port to listen on
 	BaseURL            string        // prefix to strip from URLs
 	ServerReadTimeout  time.Duration // Timeout for server reading data
@@ -84,8 +85,8 @@ type Options struct {
 	MinTLSVersion      string        // MinTLSVersion contains the minimum TLS version that is acceptable.
 }
 
-// DefaultOpt is the default values used for Options
-var DefaultOpt = Options{
+// DefaultCfg is the default values used for Config
+var DefaultCfg = Config{
 	Addrs:              []string{"127.0.0.1:8080"},
 	ServerReadTimeout:  1 * time.Hour,
 	ServerWriteTimeout: 1 * time.Hour,
@@ -124,92 +125,34 @@ func (s instance) serve(wg *sync.WaitGroup) {
 }
 
 type server struct {
+	cfg       Config
 	mux       chi.Router
 	wg        sync.WaitGroup
+	auth      *auth.Options
 	tlsConfig *tls.Config
 	instances []instance
-	useTLS    bool
-	opt       Options
 }
 
-func UseTLS(opt Options) bool {
-	return opt.TLSKey != "" || len(opt.TLSKeyBody) > 0
+type Option func(*server)
+
+func WithAuth(auth *auth.Options) Option {
+	return func(s *server) {
+		s.auth = auth
+	}
 }
 
 // NewServer instantiates a new http server using provided listeners and options
 // This function is provided if the default http server does not meet a services requirements and should not generally be used
 // A http server can listen using multiple listeners. For example, a listener for port 80, and a listener for port 443.
 // tlsListeners are ignored if opt.TLSKey is not provided
-func NewServer(opt Options, middleware ...Middleware) (Server, error) {
+func NewServer(cfg Config, options ...Option) (Server, error) {
 	s := &server{
-		mux:    chi.NewRouter(),
-		useTLS: UseTLS(opt),
-		opt:    opt,
+		mux: chi.NewRouter(),
+		cfg: cfg,
 	}
 
-	if (len(opt.TLSCertBody) > 0) != (len(opt.TLSKeyBody) > 0) {
-		log.Fatalf("need both TLSCertBody and TLSKeyBody to use TLS")
-	}
-
-	if (opt.TLSCert != "") != (opt.TLSKey != "") {
-		log.Fatalf("need both --cert and --key to use TLS")
-	}
-
-	if s.useTLS {
-		var cert tls.Certificate
-		var err error
-		if len(opt.TLSCertBody) > 0 {
-			cert, err = tls.X509KeyPair(opt.TLSCertBody, opt.TLSKeyBody)
-		} else {
-			cert, err = tls.LoadX509KeyPair(opt.TLSCert, opt.TLSKey)
-		}
-		if err != nil {
-			log.Fatal(err)
-		}
-		var minTLSVersion uint16
-		switch opt.MinTLSVersion {
-		case "tls1.0":
-			minTLSVersion = tls.VersionTLS10
-		case "tls1.1":
-			minTLSVersion = tls.VersionTLS11
-		case "tls1.2":
-			minTLSVersion = tls.VersionTLS12
-		case "tls1.3":
-			minTLSVersion = tls.VersionTLS13
-		default:
-			log.Fatalf("Invalid value for --min-tls-version: %s", opt.MinTLSVersion)
-		}
-		s.tlsConfig = &tls.Config{
-			MinVersion:   minTLSVersion,
-			Certificates: []tls.Certificate{cert},
-		}
-	}
-
-	if opt.ClientCA != "" {
-		if !s.useTLS {
-			err := errors.New("can't use --client-ca without --cert and --key")
-			log.Fatalf(err.Error())
-			return nil, err
-		}
-		certpool := x509.NewCertPool()
-		pem, err := os.ReadFile(opt.ClientCA)
-		if err != nil {
-			log.Fatalf("Failed to read client certificate authority: %v", err)
-			return nil, err
-		}
-		if !certpool.AppendCertsFromPEM(pem) {
-			err := errors.New("can't parse client certificate authority")
-			log.Fatalf(err.Error())
-			return nil, err
-		}
-		s.tlsConfig.ClientCAs = certpool
-		s.tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
-	}
-
-	// Ignore passing "/" for BaseURL
-	opt.BaseURL = strings.Trim(opt.BaseURL, "/")
-	if opt.BaseURL != "" {
-		opt.BaseURL = "/" + opt.BaseURL
+	for _, oo := range options {
+		oo(s)
 	}
 
 	// Build base router
@@ -220,18 +163,21 @@ func NewServer(opt Options, middleware ...Middleware) (Server, error) {
 		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
 	})
 
-	if opt.BaseURL != "" {
-		s.mux.Use(MiddlewareStripPrefix(opt.BaseURL))
+	// Ignore passing "/" for BaseURL
+	cfg.BaseURL = strings.Trim(cfg.BaseURL, "/")
+	if cfg.BaseURL != "" {
+		cfg.BaseURL = "/" + cfg.BaseURL
+		s.mux.Use(MiddlewareStripPrefix(cfg.BaseURL))
 	}
 
-	for _, mm := range middleware {
-		if mm == nil {
-			continue
-		}
-		s.mux.Use(mm)
+	s.initAuth()
+
+	err := s.initTLS()
+	if err != nil {
+		return nil, fmt.Errorf("init tls: %w", err)
 	}
 
-	for _, addr := range opt.Addrs {
+	for _, addr := range cfg.Addrs {
 		var url string
 		var network = "tcp"
 		var tlsCfg *tls.Config
@@ -241,14 +187,14 @@ func NewServer(opt Options, middleware ...Middleware) (Server, error) {
 			addr = strings.TrimPrefix(addr, "unix://")
 			url = addr
 
-		} else if strings.HasPrefix(addr, "tls://") || len(opt.Addrs) == 1 && s.useTLS {
+		} else if strings.HasPrefix(addr, "tls://") || (len(cfg.Addrs) == 1 && s.tlsConfig != nil) {
 			tlsCfg = s.tlsConfig
 			addr = strings.TrimPrefix(addr, "tls://")
 		}
 
 		l, err := net.Listen(network, addr)
 		if err != nil {
-			log.Fatalf("failed to setup listener for: %s", err)
+			return nil, fmt.Errorf("failed to start listener: %s", err)
 		}
 
 		if network == "tcp" {
@@ -256,7 +202,7 @@ func NewServer(opt Options, middleware ...Middleware) (Server, error) {
 			if tlsCfg != nil {
 				secure = "s"
 			}
-			url = fmt.Sprintf("http%s://%s%s/", secure, l.Addr().String(), opt.BaseURL)
+			url = fmt.Sprintf("http%s://%s%s/", secure, l.Addr().String(), cfg.BaseURL)
 		}
 
 		ii := instance{
@@ -264,9 +210,9 @@ func NewServer(opt Options, middleware ...Middleware) (Server, error) {
 			listener: l,
 			httpServer: &http.Server{
 				Handler:           s.mux,
-				ReadTimeout:       opt.ServerReadTimeout,
-				WriteTimeout:      opt.ServerWriteTimeout,
-				MaxHeaderBytes:    opt.MaxHeaderBytes,
+				ReadTimeout:       cfg.ServerReadTimeout,
+				WriteTimeout:      cfg.ServerWriteTimeout,
+				MaxHeaderBytes:    cfg.MaxHeaderBytes,
 				ReadHeaderTimeout: 10 * time.Second, // time to send the headers
 				IdleTimeout:       60 * time.Second, // time to keep idle connections open
 				TLSConfig:         tlsCfg,
@@ -278,6 +224,92 @@ func NewServer(opt Options, middleware ...Middleware) (Server, error) {
 	}
 
 	return s, nil
+}
+
+func (s *server) initAuth() {
+	if s.auth == nil {
+		return
+	}
+
+	if s.auth.Auth != nil {
+		s.mux.Use(MiddlewareAuthCustom(s.auth.Auth, s.auth.Realm))
+		return
+	}
+
+	if s.auth.HtPasswd != "" {
+		s.mux.Use(MiddlewareAuthHtpasswd(s.auth.HtPasswd, s.auth.Realm))
+		return
+	}
+
+	if s.auth.BasicUser != "" {
+		s.mux.Use(MiddlewareAuthBasic(s.auth.BasicUser, s.auth.BasicPass, s.auth.Realm, s.auth.Salt))
+		return
+	}
+}
+
+func (s *server) initTLS() error {
+	if s.cfg.TLSKey == "" && len(s.cfg.TLSKeyBody) == 0 {
+		return nil
+	}
+
+	if (len(s.cfg.TLSCertBody) > 0) != (len(s.cfg.TLSKeyBody) > 0) {
+		return fmt.Errorf("need both TLSCertBody and TLSKeyBody to use TLS")
+	}
+
+	if (s.cfg.TLSCert != "") != (s.cfg.TLSKey != "") {
+		return fmt.Errorf("need both --cert and --key to use TLS")
+	}
+
+	var cert tls.Certificate
+	var err error
+	if len(s.cfg.TLSCertBody) > 0 {
+		cert, err = tls.X509KeyPair(s.cfg.TLSCertBody, s.cfg.TLSKeyBody)
+	} else {
+		cert, err = tls.LoadX509KeyPair(s.cfg.TLSCert, s.cfg.TLSKey)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to load x509 keypair: %w", err)
+	}
+
+	var minTLSVersion uint16
+	switch s.cfg.MinTLSVersion {
+	case "tls1.0":
+		minTLSVersion = tls.VersionTLS10
+	case "tls1.1":
+		minTLSVersion = tls.VersionTLS11
+	case "tls1.2":
+		minTLSVersion = tls.VersionTLS12
+	case "tls1.3":
+		minTLSVersion = tls.VersionTLS13
+	default:
+		return fmt.Errorf("invalid value for --min-tls-version: %s", s.cfg.MinTLSVersion)
+	}
+
+	s.tlsConfig = &tls.Config{
+		MinVersion:   minTLSVersion,
+		Certificates: []tls.Certificate{cert},
+	}
+
+	if s.cfg.ClientCA == "" {
+		// if !useTLS {
+		// 	err := errors.New("can't use --client-ca without --cert and --key")
+		// 	log.Fatalf(err.Error())
+		// }
+		certpool := x509.NewCertPool()
+		pem, err := os.ReadFile(s.cfg.ClientCA)
+		if err != nil {
+			return fmt.Errorf("failed to read client certificate authority: %w", err)
+		}
+
+		if !certpool.AppendCertsFromPEM(pem) {
+			return errors.New("can't parse client certificate authority")
+		}
+
+		s.tlsConfig.ClientCAs = certpool
+		s.tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+
+	return nil
 }
 
 func (s *server) Serve() {
@@ -335,15 +367,14 @@ func (s *server) URLs() []string {
 //---- Command line flags ----
 
 // AddFlagsPrefix adds flags for the httplib
-func AddFlagsPrefix(flagSet *pflag.FlagSet, prefix string, Opt *Options) {
-	flags.StringArrayVarP(flagSet, &Opt.Addrs, prefix+"addr", "", Opt.Addrs, "IPaddress:Port or :Port to bind server to")
-	flags.DurationVarP(flagSet, &Opt.ServerReadTimeout, prefix+"server-read-timeout", "", Opt.ServerReadTimeout, "Timeout for server reading data")
-	flags.DurationVarP(flagSet, &Opt.ServerWriteTimeout, prefix+"server-write-timeout", "", Opt.ServerWriteTimeout, "Timeout for server writing data")
-	flags.IntVarP(flagSet, &Opt.MaxHeaderBytes, prefix+"max-header-bytes", "", Opt.MaxHeaderBytes, "Maximum size of request header")
-	flags.StringVarP(flagSet, &Opt.TLSCert, prefix+"cert", "", Opt.TLSCert, "TLS PEM key (concatenation of certificate and CA certificate)")
-	flags.StringVarP(flagSet, &Opt.TLSKey, prefix+"key", "", Opt.TLSKey, "TLS PEM Private key")
-	flags.StringVarP(flagSet, &Opt.ClientCA, prefix+"client-ca", "", Opt.ClientCA, "Client certificate authority to verify clients with")
-	flags.StringVarP(flagSet, &Opt.BaseURL, prefix+"baseurl", "", Opt.BaseURL, "Prefix for URLs - leave blank for root")
-	flags.StringVarP(flagSet, &Opt.MinTLSVersion, prefix+"min-tls-version", "", Opt.MinTLSVersion, "Minimum TLS version that is acceptable")
-
+func AddFlagsPrefix(flagSet *pflag.FlagSet, prefix string, cfg *Config) {
+	flags.StringArrayVarP(flagSet, &cfg.Addrs, prefix+"addr", "", cfg.Addrs, "IPaddress:Port or :Port to bind server to")
+	flags.DurationVarP(flagSet, &cfg.ServerReadTimeout, prefix+"server-read-timeout", "", cfg.ServerReadTimeout, "Timeout for server reading data")
+	flags.DurationVarP(flagSet, &cfg.ServerWriteTimeout, prefix+"server-write-timeout", "", cfg.ServerWriteTimeout, "Timeout for server writing data")
+	flags.IntVarP(flagSet, &cfg.MaxHeaderBytes, prefix+"max-header-bytes", "", cfg.MaxHeaderBytes, "Maximum size of request header")
+	flags.StringVarP(flagSet, &cfg.TLSCert, prefix+"cert", "", cfg.TLSCert, "TLS PEM key (concatenation of certificate and CA certificate)")
+	flags.StringVarP(flagSet, &cfg.TLSKey, prefix+"key", "", cfg.TLSKey, "TLS PEM Private key")
+	flags.StringVarP(flagSet, &cfg.ClientCA, prefix+"client-ca", "", cfg.ClientCA, "Client certificate authority to verify clients with")
+	flags.StringVarP(flagSet, &cfg.BaseURL, prefix+"baseurl", "", cfg.BaseURL, "Prefix for URLs - leave blank for root")
+	flags.StringVarP(flagSet, &cfg.MinTLSVersion, prefix+"min-tls-version", "", cfg.MinTLSVersion, "Minimum TLS version that is acceptable")
 }
