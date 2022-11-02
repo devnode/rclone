@@ -51,7 +51,7 @@ inserts leading and trailing "/" on ` + "`--baseurl`" + `, so ` + "`--baseurl \"
 ` + "`--baseurl \"/rclone\"` and `--baseurl \"/rclone/\"`" + ` are all treated
 identically.
 
-#### TLS/TLS
+#### TLS
 
 By default this will serve over http.  If you want you can serve over
 https.  You will need to supply the ` + "`--cert` and `--key`" + ` flags.
@@ -175,7 +175,7 @@ func WithRC(rco *rc.Options) Option {
 // This function is provided if the default http server does not meet a services requirements and should not generally be used
 // A http server can listen using multiple listeners. For example, a listener for port 80, and a listener for port 443.
 // tlsListeners are ignored if opt.TLSKey is not provided
-func NewServer(ctx context.Context, options ...Option) (Server, error) {
+func NewServer(ctx context.Context, options ...Option) (*server, error) {
 	s := &server{
 		mux: chi.NewRouter(),
 		cfg: DefaultCfg,
