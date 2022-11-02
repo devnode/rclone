@@ -57,6 +57,9 @@ See the [rc documentation](/rc/) for more info on the rc flags.
 		finalise := func() {
 			finaliseOnce.Do(func() {
 				_ = sysdnotify.Stopping()
+				if err := s.Shutdown(); err != nil {
+					log.Printf("error shutting down server: %v", err)
+				}
 			})
 		}
 		fnHandle := atexit.Register(finalise)

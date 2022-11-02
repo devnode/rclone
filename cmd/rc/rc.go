@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/rclone/rclone/cmd"
@@ -23,14 +25,15 @@ import (
 )
 
 var (
-	noOutput  = false
-	url       = "http://localhost:5572/"
-	jsonInput = ""
-	authUser  = ""
-	authPass  = ""
-	loopback  = false
-	options   []string
-	arguments []string
+	noOutput   = false
+	unixSocket = ""
+	url        = "http://localhost:5572/"
+	jsonInput  = ""
+	authUser   = ""
+	authPass   = ""
+	loopback   = false
+	options    []string
+	arguments  []string
 )
 
 func init() {
@@ -118,6 +121,12 @@ func parseFlags() {
 	setAlternateFlag("rc-addr", &url)
 	setAlternateFlag("rc-user", &authUser)
 	setAlternateFlag("rc-pass", &authPass)
+
+	if filepath.IsAbs(url) {
+		unixSocket = url
+		return
+	}
+
 	// If url is just :port then fix it up
 	if strings.HasPrefix(url, ":") {
 		url = "localhost" + url
@@ -152,6 +161,12 @@ func ParseOptions(options []string) (opt map[string]string) {
 // If the user set flagName set the output to its value
 func setAlternateFlag(flagName string, output *string) {
 	if rcFlag := pflag.Lookup(flagName); rcFlag != nil && rcFlag.Changed {
+		if v, ok := rcFlag.Value.(pflag.SliceValue); ok {
+			if data := v.GetSlice(); len(data) > 0 {
+				*output = data[0]
+			}
+			return
+		}
 		*output = rcFlag.Value.String()
 	}
 }
@@ -180,7 +195,19 @@ func doCall(ctx context.Context, path string, in rc.Params) (out rc.Params, err 
 
 	// Do HTTP request
 	client := fshttp.NewClient(ctx)
-	url += path
+
+	if len(unixSocket) > 0 {
+		client.Transport = &http.Transport{
+			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+				return net.Dial("unix", unixSocket)
+			},
+		}
+		url = "http://localhost/" + path
+
+	} else {
+		url += path
+	}
+
 	data, err := json.Marshal(in)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode JSON: %w", err)
@@ -192,7 +219,7 @@ func doCall(ctx context.Context, path string, in rc.Params) (out rc.Params, err 
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	if authUser != "" || authPass != "" {
+	if unixSocket == "" && authUser != "" || authPass != "" {
 		req.SetBasicAuth(authUser, authPass)
 	}
 

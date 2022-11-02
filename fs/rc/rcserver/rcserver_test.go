@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -50,24 +49,25 @@ func TestMain(m *testing.M) {
 // We'll do the majority of the testing with the httptest framework
 func TestRcServer(t *testing.T) {
 	opt := rc.DefaultOpt
-	opt.HTTPOptions.ListenAddr = testBindAddress
-	opt.HTTPOptions.Template = testTemplate
+	opt.HTTP.ListenAddr = []string{testBindAddress}
+	opt.Template.Path = testTemplate
 	opt.Enabled = true
 	opt.Serve = true
 	opt.Files = testFs
-	mux := http.NewServeMux()
-	rcServer := newServer(context.Background(), &opt, mux)
-	assert.NoError(t, rcServer.Serve())
+	rcServer, err := New(context.Background(), &opt)
+	assert.NoError(t, err)
 	defer func() {
-		rcServer.Close()
+		rcServer.Shutdown()
 		rcServer.Wait()
 	}()
-	testURL := rcServer.Server.URL()
+
+	urls := rcServer.server.URLs()
+	require.Len(t, urls, 1)
+	testURL := urls[0]
 
 	// Do the simplest possible test to check the server is alive
 	// Do it a few times to wait for the server to start
 	var resp *http.Response
-	var err error
 	for i := 0; i < 10; i++ {
 		resp, err = http.Get(testURL + "file.txt")
 		if err == nil {
@@ -77,7 +77,7 @@ func TestRcServer(t *testing.T) {
 	}
 
 	require.NoError(t, err)
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 
 	require.NoError(t, err)
@@ -104,9 +104,11 @@ type testRun struct {
 func testServer(t *testing.T, tests []testRun, opt *rc.Options) {
 	ctx := context.Background()
 	configfile.Install()
-	mux := http.NewServeMux()
-	opt.HTTPOptions.Template = testTemplate
-	rcServer := newServer(ctx, opt, mux)
+	opt.Template.Path = testTemplate
+	rcServer, err := New(ctx, opt)
+	if err != nil {
+		t.Fatalf("failed to start rc server: %s", err)
+	}
 	for _, test := range tests {
 		t.Run(test.Name, func(t *testing.T) {
 			method := test.Method
@@ -128,11 +130,11 @@ func testServer(t *testing.T, tests []testRun, opt *rc.Options) {
 			}
 
 			w := httptest.NewRecorder()
-			rcServer.handler(w, req)
+			rcServer.ServeHTTP(w, req)
 			resp := w.Result()
 
 			assert.Equal(t, test.Status, resp.StatusCode)
-			body, err := ioutil.ReadAll(resp.Body)
+			body, err := io.ReadAll(resp.Body)
 			require.NoError(t, err)
 
 			if test.Contains == nil {
@@ -745,8 +747,8 @@ func TestWithUserPass(t *testing.T) {
 	opt.Serve = false
 	opt.Files = ""
 	opt.NoAuth = false
-	opt.HTTPOptions.BasicUser = "user"
-	opt.HTTPOptions.BasicPass = "pass"
+	opt.Auth.BasicUser = "user"
+	opt.Auth.BasicPass = "pass"
 	testServer(t, tests, &opt)
 }
 
