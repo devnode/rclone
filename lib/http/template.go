@@ -62,7 +62,6 @@ var Assets embed.FS
 // GetTemplate returns the HTML template for serving directories via HTTP/WebDAV
 func GetTemplate(tmpl string) (*template.Template, error) {
 	var readFile = os.ReadFile
-
 	if tmpl == "" {
 		tmpl = "templates/index.html"
 		readFile = Assets.ReadFile

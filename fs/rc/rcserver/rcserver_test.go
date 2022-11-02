@@ -562,26 +562,25 @@ func TestMethods(t *testing.T) {
 			Status:   http.StatusOK,
 			Expected: "",
 			Headers: map[string]string{
-				// TODO: refactor so we can get the URL before running the test
+				// this is now being tested in lib/http/middleware_test.go
 				// "Access-Control-Allow-Origin":   "http://localhost:5572/",
 				"Access-Control-Request-Method": "POST, OPTIONS, GET, HEAD",
 				"Access-Control-Allow-Headers":  "authorization, Content-Type",
 			},
 		},
-		// this test is disabled, we'll test it at the
-		// {
-		// 	Name:   "bad",
-		// 	URL:    "",
-		// 	Method: "POTATO",
-		// 	Status: http.StatusMethodNotAllowed,
-		// 	Expected: `{
-		// 		"error": "method \"POTATO\" not allowed",
-		// 		"input": null,
-		// 		"path": "",
-		// 		"status": 405
-		// 	}
-		// 	`,
-		// },
+		{
+			Name:   "bad",
+			URL:    "",
+			Method: "POTATO",
+			Status: http.StatusMethodNotAllowed,
+			Expected: `{
+	"error": "method \"POTATO\" not allowed",
+	"input": null,
+	"path": "",
+	"status": 405
+}
+`,
+		},
 	}
 	opt := newTestOpt()
 	opt.Serve = true

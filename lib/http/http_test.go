@@ -2,21 +2,17 @@ package http
 
 import (
 	"context"
+	"crypto/tls"
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
-
-var _testCORSHeaderKeys = []string{
-	"Access-Control-Allow-Origin",
-	"Access-Control-Request-Method",
-	"Access-Control-Allow-Headers",
-}
 
 func testEchoHandler(data []byte) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -110,8 +106,7 @@ func TestNewServerHTTP(t *testing.T) {
 	}()
 
 	url := testGetServerURL(t, s)
-
-	s.Router().Use(MiddlewareCORS(""))
+	require.True(t, strings.HasPrefix(url, "http://"), "url should have http scheme")
 
 	expected := []byte("hello world")
 	s.Router().Mount("/", testEchoHandler(expected))
@@ -144,4 +139,217 @@ func TestNewServerHTTP(t *testing.T) {
 
 		testExpectRespBody(t, resp, expected)
 	})
+}
+
+func testReadTestdataFile(t *testing.T, path string) []byte {
+	data, err := os.ReadFile(filepath.Join("./testdata", path))
+	require.NoError(t, err, "")
+	return data
+}
+
+func TestNewServerTLS(t *testing.T) {
+	certBytes := testReadTestdataFile(t, "local.crt")
+	keyBytes := testReadTestdataFile(t, "local.key")
+
+	// TODO: generate a proper cert with SAN
+	// clientCert, err := tls.X509KeyPair(certBytes, keyBytes)
+	// require.NoError(t, err, "should be testing with a valid self signed certificate")
+
+	servers := []struct {
+		name    string
+		wantErr bool
+		err     error
+		http    HTTPConfig
+	}{
+		{
+			name: "FromFile/Valid",
+			http: HTTPConfig{
+				ListenAddr:    []string{"127.0.0.1:0"},
+				TLSCert:       "./testdata/local.crt",
+				TLSKey:        "./testdata/local.key",
+				MinTLSVersion: "tls1.0",
+			},
+		},
+		{
+			name:    "FromFile/NoCert",
+			wantErr: true,
+			err:     ErrTLSFileMismatch,
+			http: HTTPConfig{
+				ListenAddr:    []string{"127.0.0.1:0"},
+				TLSCert:       "",
+				TLSKey:        "./testdata/local.key",
+				MinTLSVersion: "tls1.0",
+			},
+		},
+		{
+			name:    "FromFile/InvalidCert",
+			wantErr: true,
+			http: HTTPConfig{
+				ListenAddr:    []string{"127.0.0.1:0"},
+				TLSCert:       "./testdata/local.crt.invalid",
+				TLSKey:        "./testdata/local.key",
+				MinTLSVersion: "tls1.0",
+			},
+		},
+		{
+			name:    "FromFile/NoKey",
+			wantErr: true,
+			err:     ErrTLSFileMismatch,
+			http: HTTPConfig{
+				ListenAddr:    []string{"127.0.0.1:0"},
+				TLSCert:       "./testdata/local.crt",
+				TLSKey:        "",
+				MinTLSVersion: "tls1.0",
+			},
+		},
+		{
+			name:    "FromFile/InvalidKey",
+			wantErr: true,
+			http: HTTPConfig{
+				ListenAddr:    []string{"127.0.0.1:0"},
+				TLSCert:       "./testdata/local.crt",
+				TLSKey:        "./testdata/local.key.invalid",
+				MinTLSVersion: "tls1.0",
+			},
+		},
+		{
+			name: "FromBody/Valid",
+			http: HTTPConfig{
+				ListenAddr:    []string{"127.0.0.1:0"},
+				TLSCertBody:   certBytes,
+				TLSKeyBody:    keyBytes,
+				MinTLSVersion: "tls1.0",
+			},
+		},
+		{
+			name:    "FromBody/NoCert",
+			wantErr: true,
+			err:     ErrTLSBodyMismatch,
+			http: HTTPConfig{
+				ListenAddr:    []string{"127.0.0.1:0"},
+				TLSCertBody:   nil,
+				TLSKeyBody:    keyBytes,
+				MinTLSVersion: "tls1.0",
+			},
+		},
+		{
+			name:    "FromBody/InvalidCert",
+			wantErr: true,
+			http: HTTPConfig{
+				ListenAddr:    []string{"127.0.0.1:0"},
+				TLSCertBody:   []byte("JUNK DATA"),
+				TLSKeyBody:    keyBytes,
+				MinTLSVersion: "tls1.0",
+			},
+		},
+		{
+			name:    "FromBody/NoKey",
+			wantErr: true,
+			err:     ErrTLSBodyMismatch,
+			http: HTTPConfig{
+				ListenAddr:    []string{"127.0.0.1:0"},
+				TLSCertBody:   certBytes,
+				TLSKeyBody:    nil,
+				MinTLSVersion: "tls1.0",
+			},
+		},
+		{
+			name:    "FromBody/InvalidKey",
+			wantErr: true,
+			http: HTTPConfig{
+				ListenAddr:    []string{"127.0.0.1:0"},
+				TLSCertBody:   certBytes,
+				TLSKeyBody:    []byte("JUNK DATA"),
+				MinTLSVersion: "tls1.0",
+			},
+		},
+		{
+			name: "MinTLSVersion/Valid/1.1",
+			http: HTTPConfig{
+				ListenAddr:    []string{"127.0.0.1:0"},
+				TLSCertBody:   certBytes,
+				TLSKeyBody:    keyBytes,
+				MinTLSVersion: "tls1.1",
+			},
+		},
+		{
+			name: "MinTLSVersion/Valid/1.2",
+			http: HTTPConfig{
+				ListenAddr:    []string{"127.0.0.1:0"},
+				TLSCertBody:   certBytes,
+				TLSKeyBody:    keyBytes,
+				MinTLSVersion: "tls1.2",
+			},
+		},
+		{
+			name: "MinTLSVersion/Valid/1.3",
+			http: HTTPConfig{
+				ListenAddr:    []string{"127.0.0.1:0"},
+				TLSCertBody:   certBytes,
+				TLSKeyBody:    keyBytes,
+				MinTLSVersion: "tls1.3",
+			},
+		},
+		{
+			name:    "MinTLSVersion/Invalid",
+			wantErr: true,
+			err:     ErrInvalidMinTLSVersion,
+			http: HTTPConfig{
+				ListenAddr:    []string{"127.0.0.1:0"},
+				TLSCertBody:   certBytes,
+				TLSKeyBody:    keyBytes,
+				MinTLSVersion: "tls0.9",
+			},
+		},
+	}
+
+	for _, ss := range servers {
+		t.Run(ss.name, func(t *testing.T) {
+			s, err := NewServer(context.Background(), WithConfig(&ss.http))
+			if ss.wantErr == true {
+				if ss.err != nil {
+					require.ErrorIs(t, err, ss.err, "new server should return the expected error")
+				} else {
+					require.Error(t, err, "new server should return error for invalid TLS config")
+				}
+				return
+			}
+
+			require.NoError(t, err)
+			defer func() {
+				require.NoError(t, s.Shutdown())
+			}()
+
+			expected := []byte("secret-page")
+			s.Router().Mount("/", testEchoHandler(expected))
+			s.Serve()
+
+			url := testGetServerURL(t, s)
+			require.True(t, strings.HasPrefix(url, "https://"), "url should have https scheme")
+
+			client := &http.Client{
+				Transport: &http.Transport{
+					DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+						dest := strings.TrimPrefix(url, "https://")
+						dest = strings.TrimSuffix(dest, "/")
+						return net.Dial("tcp", dest)
+					},
+					TLSClientConfig: &tls.Config{
+						// Certificates: []tls.Certificate{clientCert},
+						InsecureSkipVerify: true,
+					},
+				},
+			}
+			req, err := http.NewRequest("GET", "https://dev.rclone.org", nil)
+			require.NoError(t, err)
+
+			resp, err := client.Do(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			require.Equal(t, http.StatusOK, resp.StatusCode, "should return ok")
+
+			testExpectRespBody(t, resp, expected)
+		})
+	}
 }

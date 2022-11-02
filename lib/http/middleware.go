@@ -16,17 +16,16 @@ import (
 type CtxKey string
 
 var (
-	ContextAuthKey      CtxKey = "ContextAuthKey"
-	ContextIsAuthKey    CtxKey = "ContextIsAuthKey"
-	ContextUnixSockKey  CtxKey = "ContextUnixSockKey"
-	ContentPublicURLKey CtxKey = "ContentPublicURLKey"
-	ContextUserKey      CtxKey = "ContextUserKey"
+	ContextAuthKey       CtxKey = "ContextAuthKey"
+	ContextUnixSocketKey CtxKey = "ContextUnixSocketKey"
+	ContentPublicURLKey  CtxKey = "ContentPublicURLKey"
+	ContextUserKey       CtxKey = "ContextUserKey"
 )
 
 func NewBaseContext(ctx context.Context, url string) func(l net.Listener) context.Context {
 	return func(l net.Listener) context.Context {
 		if l.Addr().Network() == "unix" {
-			ctx = context.WithValue(ctx, ContextUnixSockKey, true)
+			ctx = context.WithValue(ctx, ContextUnixSocketKey, true)
 			return ctx
 		}
 
@@ -46,7 +45,7 @@ func IsAuthenticated(r *http.Request) bool {
 }
 
 func IsUnixSocket(r *http.Request) bool {
-	v, _ := r.Context().Value(ContextUnixSockKey).(bool)
+	v, _ := r.Context().Value(ContextUnixSocketKey).(bool)
 	return v
 }
 
@@ -151,6 +150,7 @@ func MiddlewareAuthCustom(fn CustomAuthFn, realm string) Middleware {
 			user, pass, ok := parseAuthorization(r)
 			if !ok {
 				code := http.StatusUnauthorized
+				w.Header().Set("Content-Type", "text/plain")
 				w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Basic realm=%q, charset="UTF-8"`, realm))
 				http.Error(w, http.StatusText(code), code)
 				return

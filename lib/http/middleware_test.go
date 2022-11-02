@@ -100,7 +100,7 @@ func TestMiddlewareAuth(t *testing.T) {
 
 			url := testGetServerURL(t, s)
 
-			t.Run("StatusUnauthorized", func(t *testing.T) {
+			t.Run("NoCreds", func(t *testing.T) {
 				client := &http.Client{}
 				req, err := http.NewRequest("GET", url, nil)
 				require.NoError(t, err)
@@ -109,14 +109,32 @@ func TestMiddlewareAuth(t *testing.T) {
 				require.NoError(t, err)
 				defer resp.Body.Close()
 
-				require.Equal(t, http.StatusUnauthorized, resp.StatusCode, "no basic auth creds should return unauthorized")
+				require.Equal(t, http.StatusUnauthorized, resp.StatusCode, "using no basic auth creds should return unauthorized")
 
 				wwwAuthHeader := resp.Header.Get("WWW-Authenticate")
 				require.NotEmpty(t, wwwAuthHeader, "resp should contain WWW-Authtentication header")
 				require.Contains(t, wwwAuthHeader, fmt.Sprintf("realm=%q", ss.auth.Realm), "WWW-Authtentication header should contain relam")
 			})
 
-			t.Run("StatusOK", func(t *testing.T) {
+			t.Run("BadCreds", func(t *testing.T) {
+				client := &http.Client{}
+				req, err := http.NewRequest("GET", url, nil)
+				require.NoError(t, err)
+
+				req.SetBasicAuth(ss.user+"BAD", ss.pass+"BAD")
+
+				resp, err := client.Do(req)
+				require.NoError(t, err)
+				defer resp.Body.Close()
+
+				require.Equal(t, http.StatusUnauthorized, resp.StatusCode, "using bad basic auth creds should return unauthorized")
+
+				wwwAuthHeader := resp.Header.Get("WWW-Authenticate")
+				require.NotEmpty(t, wwwAuthHeader, "resp should contain WWW-Authtentication header")
+				require.Contains(t, wwwAuthHeader, fmt.Sprintf("realm=%q", ss.auth.Realm), "WWW-Authtentication header should contain relam")
+			})
+
+			t.Run("GoodCreds", func(t *testing.T) {
 				client := &http.Client{}
 				req, err := http.NewRequest("GET", url, nil)
 				require.NoError(t, err)
@@ -127,12 +145,18 @@ func TestMiddlewareAuth(t *testing.T) {
 				require.NoError(t, err)
 				defer resp.Body.Close()
 
-				require.Equal(t, http.StatusOK, resp.StatusCode, "using basic auth creds should return ok")
+				require.Equal(t, http.StatusOK, resp.StatusCode, "using good basic auth creds should return ok")
 
 				testExpectRespBody(t, resp, expected)
 			})
 		})
 	}
+}
+
+var _testCORSHeaderKeys = []string{
+	"Access-Control-Allow-Origin",
+	"Access-Control-Request-Method",
+	"Access-Control-Allow-Headers",
 }
 
 func TestMiddlewareCORS(t *testing.T) {
@@ -142,14 +166,14 @@ func TestMiddlewareCORS(t *testing.T) {
 		origin string
 	}{
 		{
-			name: "Empty",
+			name: "EmptyOrigin",
 			http: HTTPConfig{
 				ListenAddr: []string{"127.0.0.1:0"},
 			},
 			origin: "",
 		},
 		{
-			name: "Custom",
+			name: "CustomOrigin",
 			http: HTTPConfig{
 				ListenAddr: []string{"127.0.0.1:0"},
 			},

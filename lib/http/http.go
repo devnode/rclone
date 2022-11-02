@@ -299,17 +299,23 @@ func (s *server) initTemplate() error {
 	return err
 }
 
+var (
+	ErrInvalidMinTLSVersion = errors.New("invalid value for --min-tls-version")
+	ErrTLSBodyMismatch      = errors.New("need both TLSCertBody and TLSKeyBody to use TLS")
+	ErrTLSFileMismatch      = errors.New("need both --cert and --key to use TLS")
+)
+
 func (s *server) initTLS() error {
-	if s.cfg.TLSKey == "" && len(s.cfg.TLSKeyBody) == 0 {
+	if s.cfg.TLSCert == "" && s.cfg.TLSKey == "" && len(s.cfg.TLSCertBody) == 0 && len(s.cfg.TLSKeyBody) == 0 {
 		return nil
 	}
 
 	if (len(s.cfg.TLSCertBody) > 0) != (len(s.cfg.TLSKeyBody) > 0) {
-		return errors.New("need both TLSCertBody and TLSKeyBody to use TLS")
+		return ErrTLSBodyMismatch
 	}
 
 	if (s.cfg.TLSCert != "") != (s.cfg.TLSKey != "") {
-		return errors.New("need both --cert and --key to use TLS")
+		return ErrTLSFileMismatch
 	}
 
 	var cert tls.Certificate
@@ -334,7 +340,7 @@ func (s *server) initTLS() error {
 	case "tls1.3":
 		minTLSVersion = tls.VersionTLS13
 	default:
-		return fmt.Errorf("invalid value for --min-tls-version: %s", s.cfg.MinTLSVersion)
+		return fmt.Errorf("%w: %s", ErrInvalidMinTLSVersion, s.cfg.MinTLSVersion)
 	}
 
 	s.tlsConfig = &tls.Config{
@@ -367,7 +373,7 @@ func (s *server) initTLS() error {
 func (s *server) Serve() {
 	s.wg.Add(len(s.instances))
 	for _, ii := range s.instances {
-		log.Printf("listening on %s", ii.url)
+		// log.Printf("listening on %s", ii.url)
 		go ii.serve(&s.wg)
 	}
 }

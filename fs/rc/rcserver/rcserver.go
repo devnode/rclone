@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -29,6 +30,7 @@ import (
 	"github.com/rclone/rclone/fs/rc/jobs"
 	"github.com/rclone/rclone/fs/rc/rcflags"
 	"github.com/rclone/rclone/fs/rc/webgui"
+	"github.com/rclone/rclone/lib/atexit"
 	libhttp "github.com/rclone/rclone/lib/http"
 	"github.com/rclone/rclone/lib/http/serve"
 	"github.com/rclone/rclone/lib/random"
@@ -58,7 +60,24 @@ func Start(ctx context.Context, opt *rc.Options) (*RCServer, error) {
 	if opt == nil || !opt.Enabled {
 		return nil, nil
 	}
-	return New(ctx, opt)
+
+	s, err := New(ctx, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	// Notify stopping on exit
+	var finaliseOnce sync.Once
+	finalise := func() {
+		finaliseOnce.Do(func() {
+			if err := s.Shutdown(); err != nil {
+				log.Printf("error shutting down server: %v", err)
+			}
+		})
+	}
+	_ = atexit.Register(finalise)
+
+	return s, nil
 }
 
 // RCServer contains everything to run the rc server
@@ -127,9 +146,15 @@ func New(ctx context.Context, opt *rc.Options) (*RCServer, error) {
 		s.pluginsHandler = http.FileServer(http.Dir(webgui.PluginsPath))
 	}
 
-	mux := s.server.Router()
-	mux.Use(libhttp.MiddlewareCORS(opt.AccessControlAllowOrigin))
-	mux.Mount("/", s)
+	s.server.Router().Use(libhttp.MiddlewareCORS(opt.AccessControlAllowOrigin))
+	s.server.Router().Method("GET", "/*", s)
+	s.server.Router().Method("HEAD", "/*", s)
+	s.server.Router().Method("OPTIONS", "/*", s)
+	s.server.Router().Method("POST", "/*", s)
+	s.server.Router().MethodNotAllowed(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimLeft(r.URL.Path, "/")
+		s.handleMethodNotAllowed(w, r, path)
+	})
 
 	s.server.Serve()
 	s.OpenBrowser()
@@ -209,7 +234,7 @@ func (s *RCServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "GET", "HEAD":
 		s.handleGet(w, r, path)
 	default:
-		writeError(path, nil, w, fmt.Errorf("method %q not allowed", r.Method), http.StatusMethodNotAllowed)
+		s.handleMethodNotAllowed(w, r, path)
 		return
 	}
 }
@@ -393,4 +418,8 @@ func (s *RCServer) handleGet(w http.ResponseWriter, r *http.Request, path string
 		return
 	}
 	http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+}
+
+func (s *RCServer) handleMethodNotAllowed(w http.ResponseWriter, r *http.Request, path string) {
+	writeError(path, nil, w, fmt.Errorf("method %q not allowed", r.Method), http.StatusMethodNotAllowed)
 }
