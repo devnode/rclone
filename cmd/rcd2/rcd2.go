@@ -19,12 +19,11 @@ import (
 const RC_DEFAULT_ADDR = "localhost:5572"
 
 func init() {
-	flagSet := commandDefinition.Flags()
 
 	HTTPConfig.Addrs = []string{RC_DEFAULT_ADDR}
-
-	libhttp.AddFlagsPrefix(flagSet, "rcd2-", &HTTPConfig)
-	auth.AddFlagsPrefix(flagSet, "rcd2-", &AuthOptions)
+	// flagSet := commandDefinition.Flags()
+	// libhttp.AddFlagsPrefix(flagSet, "rcd2-", &HTTPConfig)
+	// auth.AddFlagsPrefix(flagSet, "rcd2-", &AuthOptions)
 
 	cmd.Root.AddCommand(commandDefinition)
 }
@@ -54,20 +53,23 @@ See the [rc documentation](/rc/) for more info on the rc flags.
 		// 	log.Fatalf("Don't supply --rc flag when using rcd")
 		// }
 
-		// Start the rc
-		// rcflags.Opt.Enabled = true
-		// if len(args) > 0 {
-		// 	rcflags.Opt.Files = args[0]
-		// }
-
 		ctx := context.Background()
 
-		s, err := libhttp.NewServer(ctx, HTTPConfig, libhttp.WithAuth(&AuthOptions))
-		if err != nil {
-			log.Fatalf("error starting server: %v", err)
+		// Start the rc
+		rcflags.Opt.Enabled = true
+		if len(args) > 0 {
+			rcflags.Opt.Files = args[0]
 		}
 
-		_ = rcserver2.New(ctx, &rcflags.Opt, s)
+		// s, err := libhttp.NewServer(ctx, libhttp.WithConfig(HTTPConfig), libhttp.WithAuth(&AuthOptions))
+		// if err != nil {
+		// 	log.Fatalf("error starting server: %v", err)
+		// }
+
+		s, err := rcserver2.New(ctx, &rcflags.Opt)
+		if err != nil {
+			log.Fatal(err)
+		}
 
 		// Notify stopping on exit
 		var finaliseOnce sync.Once

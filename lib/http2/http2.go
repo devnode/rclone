@@ -18,6 +18,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/rclone/rclone/fs/config/flags"
+	"github.com/rclone/rclone/fs/rc"
 	"github.com/rclone/rclone/lib/http2/auth"
 	"github.com/spf13/pflag"
 )
@@ -128,16 +129,45 @@ type server struct {
 	cfg       Config
 	mux       chi.Router
 	wg        sync.WaitGroup
-	auth      *auth.Options
+	auth      auth.Options
 	tlsConfig *tls.Config
 	instances []instance
 }
 
 type Option func(*server)
 
-func WithAuth(auth *auth.Options) Option {
+func WithAuth(auth auth.Options) Option {
 	return func(s *server) {
 		s.auth = auth
+	}
+}
+
+func WithConfig(cfg Config) Option {
+	return func(s *server) {
+		s.cfg = cfg
+	}
+}
+
+func WithRC(rco *rc.Options) Option {
+	return func(s *server) {
+		httpOpts := rco.HTTPOptions
+
+		s.cfg.Addrs = []string{httpOpts.ListenAddr}
+		s.cfg.BaseURL = httpOpts.BaseURL
+		s.cfg.ServerReadTimeout = httpOpts.ServerReadTimeout
+		s.cfg.ServerWriteTimeout = httpOpts.ServerWriteTimeout
+		s.cfg.MaxHeaderBytes = httpOpts.MaxHeaderBytes
+		s.cfg.TLSCert = httpOpts.SslCert
+		s.cfg.TLSKey = httpOpts.SslKey
+		s.cfg.ClientCA = httpOpts.ClientCA
+		s.cfg.MinTLSVersion = httpOpts.MinTLSVersion
+
+		s.auth.HtPasswd = httpOpts.HtPasswd
+		s.auth.Realm = httpOpts.Realm
+		s.auth.BasicUser = httpOpts.BasicUser
+		s.auth.BasicPass = httpOpts.BasicPass
+		// TODO: fix this type wrap
+		s.auth.CustomAuthFn = auth.CustomAuthFn(httpOpts.Auth)
 	}
 }
 
@@ -145,10 +175,10 @@ func WithAuth(auth *auth.Options) Option {
 // This function is provided if the default http server does not meet a services requirements and should not generally be used
 // A http server can listen using multiple listeners. For example, a listener for port 80, and a listener for port 443.
 // tlsListeners are ignored if opt.TLSKey is not provided
-func NewServer(ctx context.Context, cfg Config, options ...Option) (Server, error) {
+func NewServer(ctx context.Context, options ...Option) (Server, error) {
 	s := &server{
 		mux: chi.NewRouter(),
-		cfg: cfg,
+		cfg: DefaultCfg,
 	}
 
 	for _, oo := range options {
@@ -164,10 +194,10 @@ func NewServer(ctx context.Context, cfg Config, options ...Option) (Server, erro
 	})
 
 	// Ignore passing "/" for BaseURL
-	cfg.BaseURL = strings.Trim(cfg.BaseURL, "/")
-	if cfg.BaseURL != "" {
-		cfg.BaseURL = "/" + cfg.BaseURL
-		s.mux.Use(MiddlewareStripPrefix(cfg.BaseURL))
+	s.cfg.BaseURL = strings.Trim(s.cfg.BaseURL, "/")
+	if s.cfg.BaseURL != "" {
+		s.cfg.BaseURL = "/" + s.cfg.BaseURL
+		s.mux.Use(MiddlewareStripPrefix(s.cfg.BaseURL))
 	}
 
 	s.initAuth()
@@ -177,7 +207,7 @@ func NewServer(ctx context.Context, cfg Config, options ...Option) (Server, erro
 		return nil, fmt.Errorf("init tls: %w", err)
 	}
 
-	for _, addr := range cfg.Addrs {
+	for _, addr := range s.cfg.Addrs {
 		var url string
 		var network = "tcp"
 		var tlsCfg *tls.Config
@@ -187,7 +217,7 @@ func NewServer(ctx context.Context, cfg Config, options ...Option) (Server, erro
 			addr = strings.TrimPrefix(addr, "unix://")
 			url = addr
 
-		} else if strings.HasPrefix(addr, "tls://") || (len(cfg.Addrs) == 1 && s.tlsConfig != nil) {
+		} else if strings.HasPrefix(addr, "tls://") || (len(s.cfg.Addrs) == 1 && s.tlsConfig != nil) {
 			tlsCfg = s.tlsConfig
 			addr = strings.TrimPrefix(addr, "tls://")
 		}
@@ -202,7 +232,7 @@ func NewServer(ctx context.Context, cfg Config, options ...Option) (Server, erro
 			if tlsCfg != nil {
 				secure = "s"
 			}
-			url = fmt.Sprintf("http%s://%s%s/", secure, l.Addr().String(), cfg.BaseURL)
+			url = fmt.Sprintf("http%s://%s%s/", secure, l.Addr().String(), s.cfg.BaseURL)
 		}
 
 		ii := instance{
@@ -210,9 +240,9 @@ func NewServer(ctx context.Context, cfg Config, options ...Option) (Server, erro
 			listener: l,
 			httpServer: &http.Server{
 				Handler:           s.mux,
-				ReadTimeout:       cfg.ServerReadTimeout,
-				WriteTimeout:      cfg.ServerWriteTimeout,
-				MaxHeaderBytes:    cfg.MaxHeaderBytes,
+				ReadTimeout:       s.cfg.ServerReadTimeout,
+				WriteTimeout:      s.cfg.ServerWriteTimeout,
+				MaxHeaderBytes:    s.cfg.MaxHeaderBytes,
 				ReadHeaderTimeout: 10 * time.Second, // time to send the headers
 				IdleTimeout:       60 * time.Second, // time to keep idle connections open
 				TLSConfig:         tlsCfg,
@@ -227,10 +257,6 @@ func NewServer(ctx context.Context, cfg Config, options ...Option) (Server, erro
 }
 
 func (s *server) initAuth() {
-	if s.auth == nil {
-		return
-	}
-
 	if s.auth.CustomAuthFn != nil {
 		s.mux.Use(MiddlewareAuthCustom(s.auth.CustomAuthFn, s.auth.Realm))
 		return

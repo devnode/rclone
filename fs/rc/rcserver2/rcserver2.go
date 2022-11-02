@@ -53,12 +53,10 @@ func init() {
 // If the server wasn't configured the *RCServer returned may be nil
 func Start(ctx context.Context, opt *rc.Options) (*RCServer, error) {
 	jobs.SetOpt(opt) // set the defaults for jobs
-	if opt.Enabled {
-		// Serve on the DefaultServeMux so can have global registrations appear
-		// s := newServer(ctx, opt, http.DefaultServeMux)
-		// return s, s.Serve()
+	if opt == nil || !opt.Enabled {
+		return nil, nil
 	}
-	return nil, nil
+	return New(ctx, opt)
 }
 
 // RCServer contains everything to run the rc server
@@ -71,18 +69,22 @@ type RCServer struct {
 	HTMLTemplate   *template.Template
 }
 
-func New(ctx context.Context, opt *rc.Options, server libhttp.Server) *RCServer {
+func New(ctx context.Context, opt *rc.Options) (*RCServer, error) {
 	var err error
 
 	s := &RCServer{
-		ctx:    ctx,
-		opt:    opt,
-		server: server,
+		ctx: ctx,
+		opt: opt,
+	}
+
+	s.server, err = libhttp.NewServer(ctx, libhttp.WithRC(opt))
+	if err != nil {
+		return nil, fmt.Errorf("failed to init server: %w", err)
 	}
 
 	s.HTMLTemplate, err = data.GetTemplate(opt.HTTPOptions.Template)
 	if err != nil {
-		log.Fatalf(err.Error())
+		return nil, fmt.Errorf("failed to get template: %w", err)
 	}
 
 	// Add some more mime types which are often missing
@@ -125,14 +127,14 @@ func New(ctx context.Context, opt *rc.Options, server libhttp.Server) *RCServer 
 		s.pluginsHandler = http.FileServer(http.Dir(webgui.PluginsPath))
 	}
 
-	mux := server.Router()
+	mux := s.server.Router()
 	mux.Use(libhttp.MiddlewareCORS(opt.AccessControlAllowOrigin))
 	mux.HandleFunc("/", s.handler)
 
-	server.Serve()
+	s.server.Serve()
 	s.OpenBrowser()
 
-	return s
+	return s, nil
 }
 
 func (s *RCServer) OpenBrowser() {
