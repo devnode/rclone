@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -98,6 +99,12 @@ func NewLoggedBasicAuthenticator(realm string, secrets goauth.SecretProvider) *L
 func basicAuth(authenticator *LoggedBasicAuth) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// skip auth for unix socket
+			if IsUnixSocket(r) {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			username := authenticator.CheckAuth(r)
 			if username == "" {
 				authenticator.RequireAuth(w, r)
@@ -135,9 +142,17 @@ func MiddlewareAuthBasic(user, pass, realm, salt string) Middleware {
 func MiddlewareAuthCustom(fn CustomAuthFn, realm string) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// skip auth for unix socket
+			if IsUnixSocket(r) {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			user, pass, ok := parseAuthorization(r)
 			if !ok {
-				next.ServeHTTP(w, r)
+				code := http.StatusUnauthorized
+				w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Basic realm=%q, charset="UTF-8"`, realm))
+				http.Error(w, http.StatusText(code), code)
 				return
 			}
 
@@ -181,7 +196,6 @@ func MiddlewareCORS(allowOrigin string) Middleware {
 			}
 
 			// echo back access control headers client needs
-			//reqAccessHeaders := r.Header.Get("Access-Control-Request-Headers")
 			w.Header().Add("Access-Control-Request-Method", "POST, OPTIONS, GET, HEAD")
 			w.Header().Add("Access-Control-Allow-Headers", "authorization, Content-Type")
 

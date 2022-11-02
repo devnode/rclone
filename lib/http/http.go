@@ -364,8 +364,6 @@ func (s *server) initTLS() error {
 	return nil
 }
 
-var finaliseOnce sync.Once
-
 func (s *server) Serve() {
 	s.wg.Add(len(s.instances))
 	for _, ii := range s.instances {
