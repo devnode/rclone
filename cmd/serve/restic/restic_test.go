@@ -10,9 +10,9 @@ import (
 	"testing"
 
 	_ "github.com/rclone/rclone/backend/all"
-	"github.com/rclone/rclone/cmd/serve/httplib"
 	"github.com/rclone/rclone/fstest"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -28,9 +28,6 @@ func TestRestic(t *testing.T) {
 		t.Skipf("Skipping test as restic source not found: %v", err)
 	}
 
-	opt := httplib.DefaultOpt
-	opt.ListenAddr = testBindAddress
-
 	fstest.Initialise()
 
 	fremote, _, clean, err := fstest.RandomRemote()
@@ -41,12 +38,15 @@ func TestRestic(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Start the server
-	w := NewServer(fremote, &opt)
-	assert.NoError(t, w.Serve())
+	opt := DefaultOpt
+	opt.HTTP.ListenAddr = []string{testBindAddress}
+	r, err := newRestic(context.Background(), fremote, opt)
+	assert.NoError(t, err)
 	defer func() {
-		w.Close()
-		w.Wait()
+		require.NoError(t, r.server.Shutdown())
 	}()
+
+	url := testGetServerURL(t, r)
 
 	// Change directory to run the tests
 	err = os.Chdir(resticSource)
@@ -60,7 +60,7 @@ func TestRestic(t *testing.T) {
 		}
 		cmd := exec.Command("go", args...)
 		cmd.Env = append(os.Environ(),
-			"RESTIC_TEST_REST_REPOSITORY=rest:"+w.Server.URL()+path,
+			"RESTIC_TEST_REST_REPOSITORY=rest:"+url+path,
 			"GO111MODULE=on",
 		)
 		out, err := cmd.CombinedOutput()

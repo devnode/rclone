@@ -5,9 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"regexp"
 	"strings"
@@ -50,24 +48,25 @@ func TestMain(m *testing.M) {
 // We'll do the majority of the testing with the httptest framework
 func TestRcServer(t *testing.T) {
 	opt := rc.DefaultOpt
-	opt.HTTPOptions.ListenAddr = testBindAddress
-	opt.HTTPOptions.Template = testTemplate
+	opt.HTTP.ListenAddr = []string{testBindAddress}
+	opt.Template.Path = testTemplate
 	opt.Enabled = true
 	opt.Serve = true
 	opt.Files = testFs
-	mux := http.NewServeMux()
-	rcServer := newServer(context.Background(), &opt, mux)
-	assert.NoError(t, rcServer.Serve())
+	rcServer, err := New(context.Background(), &opt)
+	assert.NoError(t, err)
 	defer func() {
-		rcServer.Close()
+		rcServer.Shutdown()
 		rcServer.Wait()
 	}()
-	testURL := rcServer.Server.URL()
+
+	urls := rcServer.server.URLs()
+	require.Len(t, urls, 1)
+	testURL := urls[0]
 
 	// Do the simplest possible test to check the server is alive
 	// Do it a few times to wait for the server to start
 	var resp *http.Response
-	var err error
 	for i := 0; i < 10; i++ {
 		resp, err = http.Get(testURL + "file.txt")
 		if err == nil {
@@ -77,7 +76,7 @@ func TestRcServer(t *testing.T) {
 	}
 
 	require.NoError(t, err)
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 
 	require.NoError(t, err)
@@ -104,9 +103,17 @@ type testRun struct {
 func testServer(t *testing.T, tests []testRun, opt *rc.Options) {
 	ctx := context.Background()
 	configfile.Install()
-	mux := http.NewServeMux()
-	opt.HTTPOptions.Template = testTemplate
-	rcServer := newServer(ctx, opt, mux)
+	opt.Template.Path = testTemplate
+	rcServer, err := New(ctx, opt)
+	if err != nil {
+		t.Fatalf("failed to start rc server: %s", err)
+	}
+	defer func() {
+		require.NoError(t, rcServer.Shutdown())
+	}()
+	urls := rcServer.server.URLs()
+	require.Len(t, urls, 1)
+	server := urls[0]
 	for _, test := range tests {
 		t.Run(test.Name, func(t *testing.T) {
 			method := test.Method
@@ -118,7 +125,7 @@ func testServer(t *testing.T, tests []testRun, opt *rc.Options) {
 				buf := bytes.NewBufferString(test.Body)
 				inBody = buf
 			}
-			req, err := http.NewRequest(method, "http://1.2.3.4/"+test.URL, inBody)
+			req, err := http.NewRequest(method, server+test.URL, inBody)
 			require.NoError(t, err)
 			if test.Range != "" {
 				req.Header.Add("Range", test.Range)
@@ -126,13 +133,19 @@ func testServer(t *testing.T, tests []testRun, opt *rc.Options) {
 			if test.ContentType != "" {
 				req.Header.Add("Content-Type", test.ContentType)
 			}
+			if opt.Auth.BasicUser != "" && opt.Auth.BasicPass != "" {
+				req.SetBasicAuth(opt.Auth.BasicUser, opt.Auth.BasicPass)
+			}
 
-			w := httptest.NewRecorder()
-			rcServer.handler(w, req)
-			resp := w.Result()
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+
+			// w := httptest.NewRecorder()
+			// rcServer.server.ServeHTTP(w, req)
+			// resp := w.Result()
 
 			assert.Equal(t, test.Status, resp.StatusCode)
-			body, err := ioutil.ReadAll(resp.Body)
+			body, err := io.ReadAll(resp.Body)
 			require.NoError(t, err)
 
 			if test.Contains == nil {
@@ -544,30 +557,34 @@ Unknown command
 }
 
 func TestMethods(t *testing.T) {
-	tests := []testRun{{
-		Name:     "options",
-		URL:      "",
-		Method:   "OPTIONS",
-		Status:   http.StatusOK,
-		Expected: "",
-		Headers: map[string]string{
-			"Access-Control-Allow-Origin":   "http://localhost:5572/",
-			"Access-Control-Request-Method": "POST, OPTIONS, GET, HEAD",
-			"Access-Control-Allow-Headers":  "authorization, Content-Type",
+	tests := []testRun{
+		{
+			Name:     "options",
+			URL:      "",
+			Method:   "OPTIONS",
+			Status:   http.StatusOK,
+			Expected: "",
+			Headers: map[string]string{
+				// this is now being tested in lib/http/middleware_test.go
+				// "Access-Control-Allow-Origin":   "http://localhost:5572/",
+				"Access-Control-Request-Method": "POST, OPTIONS, GET, HEAD",
+				"Access-Control-Allow-Headers":  "authorization, Content-Type",
+			},
 		},
-	}, {
-		Name:   "bad",
-		URL:    "",
-		Method: "POTATO",
-		Status: http.StatusMethodNotAllowed,
-		Expected: `{
+		{
+			Name:   "bad",
+			URL:    "",
+			Method: "POTATO",
+			Status: http.StatusMethodNotAllowed,
+			Expected: `{
 	"error": "method \"POTATO\" not allowed",
 	"input": null,
 	"path": "",
 	"status": 405
 }
 `,
-	}}
+		},
+	}
 	opt := newTestOpt()
 	opt.Serve = true
 	opt.Files = testFs
@@ -745,8 +762,8 @@ func TestWithUserPass(t *testing.T) {
 	opt.Serve = false
 	opt.Files = ""
 	opt.NoAuth = false
-	opt.HTTPOptions.BasicUser = "user"
-	opt.HTTPOptions.BasicPass = "pass"
+	opt.Auth.BasicUser = "user"
+	opt.Auth.BasicPass = "pass"
 	testServer(t, tests, &opt)
 }
 

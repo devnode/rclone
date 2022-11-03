@@ -20,7 +20,6 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/rclone/rclone/cmd/serve/httplib"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/accounting"
 	"github.com/rclone/rclone/fs/cache"
@@ -31,13 +30,14 @@ import (
 	"github.com/rclone/rclone/fs/rc/jobs"
 	"github.com/rclone/rclone/fs/rc/rcflags"
 	"github.com/rclone/rclone/fs/rc/webgui"
+	"github.com/rclone/rclone/lib/atexit"
+	libhttp "github.com/rclone/rclone/lib/http"
 	"github.com/rclone/rclone/lib/http/serve"
 	"github.com/rclone/rclone/lib/random"
 	"github.com/skratchdot/open-golang/open"
 )
 
 var promHandler http.Handler
-var onlyOnceWarningAllowOrigin sync.Once
 
 func init() {
 	rcloneCollector := accounting.NewRcloneCollector(context.Background())
@@ -54,29 +54,58 @@ func init() {
 
 // Start the remote control server if configured
 //
-// If the server wasn't configured the *Server returned may be nil
-func Start(ctx context.Context, opt *rc.Options) (*Server, error) {
+// If the server wasn't configured the *RCServer returned may be nil
+func Start(ctx context.Context, opt *rc.Options) (*RCServer, error) {
 	jobs.SetOpt(opt) // set the defaults for jobs
-	if opt.Enabled {
-		// Serve on the DefaultServeMux so can have global registrations appear
-		s := newServer(ctx, opt, http.DefaultServeMux)
-		return s, s.Serve()
+	if opt == nil || !opt.Enabled {
+		return nil, nil
 	}
-	return nil, nil
+
+	s, err := New(ctx, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	// Notify stopping on exit
+	var finaliseOnce sync.Once
+	finalise := func() {
+		finaliseOnce.Do(func() {
+			if err := s.Shutdown(); err != nil {
+				log.Printf("error shutting down server: %v", err)
+			}
+		})
+	}
+	_ = atexit.Register(finalise)
+
+	return s, nil
 }
 
-// Server contains everything to run the rc server
-type Server struct {
-	*httplib.Server
+// RCServer contains everything to run the rc server
+type RCServer struct {
+	server         libhttp.Server
 	ctx            context.Context // for global config
 	files          http.Handler
 	pluginsHandler http.Handler
 	opt            *rc.Options
 }
 
-func newServer(ctx context.Context, opt *rc.Options, mux *http.ServeMux) *Server {
-	fileHandler := http.Handler(nil)
-	pluginsHandler := http.Handler(nil)
+func New(ctx context.Context, opt *rc.Options) (*RCServer, error) {
+	var err error
+
+	s := &RCServer{
+		ctx: ctx,
+		opt: opt,
+	}
+
+	s.server, err = libhttp.NewServer(ctx,
+		libhttp.WithConfig(opt.HTTP),
+		libhttp.WithAuth(opt.Auth),
+		libhttp.WithTemplate(opt.Template),
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	// Add some more mime types which are often missing
 	_ = mime.AddExtensionType(".wasm", "application/wasm")
 	_ = mime.AddExtensionType(".js", "application/javascript")
@@ -89,7 +118,7 @@ func newServer(ctx context.Context, opt *rc.Options, mux *http.ServeMux) *Server
 			fs.Logf(nil, "--rc-files overrides --rc-web-gui command\n")
 		}
 		fs.Logf(nil, "Serving files from %q", opt.Files)
-		fileHandler = http.FileServer(http.Dir(opt.Files))
+		s.files = http.FileServer(http.Dir(opt.Files))
 	} else if opt.WebUI {
 		if err := webgui.CheckAndDownloadWebGUIRelease(opt.WebGUIUpdate, opt.WebGUIForceUpdate, opt.WebGUIFetchURL, config.GetCacheDir()); err != nil {
 			fs.Errorf(nil, "Error while fetching the latest release of Web GUI: %v", err)
@@ -97,78 +126,88 @@ func newServer(ctx context.Context, opt *rc.Options, mux *http.ServeMux) *Server
 		if opt.NoAuth {
 			fs.Logf(nil, "It is recommended to use web gui with auth.")
 		} else {
-			if opt.HTTPOptions.BasicUser == "" {
-				opt.HTTPOptions.BasicUser = "gui"
-				fs.Infof(nil, "No username specified. Using default username: %s \n", rcflags.Opt.HTTPOptions.BasicUser)
+			if opt.Auth.BasicUser == "" {
+				opt.Auth.BasicUser = "gui"
+				fs.Infof(nil, "No username specified. Using default username: %s \n", rcflags.Opt.Auth.BasicUser)
 			}
-			if opt.HTTPOptions.BasicPass == "" {
+			if opt.Auth.BasicPass == "" {
 				randomPass, err := random.Password(128)
 				if err != nil {
 					log.Fatalf("Failed to make password: %v", err)
 				}
-				opt.HTTPOptions.BasicPass = randomPass
+				opt.Auth.BasicPass = randomPass
 				fs.Infof(nil, "No password specified. Using random password: %s \n", randomPass)
 			}
 		}
 		opt.Serve = true
 
 		fs.Logf(nil, "Serving Web GUI")
-		fileHandler = http.FileServer(http.Dir(extractPath))
-
-		pluginsHandler = http.FileServer(http.Dir(webgui.PluginsPath))
+		s.files = http.FileServer(http.Dir(extractPath))
+		s.pluginsHandler = http.FileServer(http.Dir(webgui.PluginsPath))
 	}
 
-	s := &Server{
-		Server:         httplib.NewServer(mux, &opt.HTTPOptions),
-		ctx:            ctx,
-		opt:            opt,
-		files:          fileHandler,
-		pluginsHandler: pluginsHandler,
-	}
-	mux.HandleFunc("/", s.handler)
+	s.server.Router().Use(libhttp.MiddlewareCORS(opt.AccessControlAllowOrigin))
+	s.server.Router().Method("GET", "/*", s)
+	s.server.Router().Method("HEAD", "/*", s)
+	s.server.Router().Method("OPTIONS", "/*", s)
+	s.server.Router().Method("POST", "/*", s)
+	s.server.Router().MethodNotAllowed(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimLeft(r.URL.Path, "/")
+		s.handleMethodNotAllowed(w, r, path)
+	})
 
-	return s
+	s.server.Serve()
+	s.OpenBrowser()
+
+	return s, nil
 }
 
-// Serve runs the http server in the background.
-//
-// Use s.Close() and s.Wait() to shutdown server
-func (s *Server) Serve() error {
-	err := s.Server.Serve()
-	if err != nil {
-		return err
+func (s *RCServer) OpenBrowser() {
+	urls := s.server.URLs()
+	if s.files == nil || len(urls) == 0 {
+		return
 	}
-	fs.Logf(nil, "Serving remote control on %s", s.URL())
-	// Open the files in the browser if set
-	if s.files != nil {
-		openURL, err := url.Parse(s.URL())
-		if err != nil {
-			return fmt.Errorf("invalid serving URL: %w", err)
-		}
-		// Add username, password into the URL if they are set
-		user, pass := s.opt.HTTPOptions.BasicUser, s.opt.HTTPOptions.BasicPass
-		if user != "" && pass != "" {
-			openURL.User = url.UserPassword(user, pass)
 
-			// Base64 encode username and password to be sent through url
-			loginToken := user + ":" + pass
-			parameters := url.Values{}
-			encodedToken := base64.URLEncoding.EncodeToString([]byte(loginToken))
-			fs.Debugf(nil, "login_token %q", encodedToken)
-			parameters.Add("login_token", encodedToken)
-			openURL.RawQuery = parameters.Encode()
-			openURL.RawPath = "/#/login"
-		}
-		// Don't open browser if serving in testing environment or required not to do so.
-		if flag.Lookup("test.v") == nil && !s.opt.WebGUINoOpenBrowser {
-			if err := open.Start(openURL.String()); err != nil {
-				fs.Errorf(nil, "Failed to open Web GUI in browser: %v. Manually access it at: %s", err, openURL.String())
-			}
-		} else {
-			fs.Logf(nil, "Web GUI is not automatically opening browser. Navigate to %s to use.", openURL.String())
-		}
+	for _, uu := range urls {
+		fs.Logf(nil, "Serving remote control on %s", uu)
 	}
-	return nil
+
+	// Open the files in the browser if set
+	openURL, err := url.Parse(urls[0])
+	if err != nil {
+		fs.Errorf(nil, "invalid serving URL %q: %s", urls[0], err)
+		return
+	}
+	// Add username, password into the URL if they are set
+	user, pass := s.opt.Auth.BasicUser, s.opt.Auth.BasicPass
+	if user != "" && pass != "" {
+		openURL.User = url.UserPassword(user, pass)
+
+		// Base64 encode username and password to be sent through url
+		loginToken := user + ":" + pass
+		parameters := url.Values{}
+		encodedToken := base64.URLEncoding.EncodeToString([]byte(loginToken))
+		fs.Debugf(nil, "login_token %q", encodedToken)
+		parameters.Add("login_token", encodedToken)
+		openURL.RawQuery = parameters.Encode()
+		openURL.RawPath = "/#/login"
+	}
+	// Don't open browser if serving in testing environment or required not to do so.
+	if flag.Lookup("test.v") == nil && !s.opt.WebGUINoOpenBrowser {
+		if err := open.Start(openURL.String()); err != nil {
+			fs.Errorf(nil, "Failed to open Web GUI in browser: %v. Manually access it at: %s", err, openURL.String())
+		}
+	} else {
+		fs.Logf(nil, "Web GUI is not automatically opening browser. Navigate to %s to use.", openURL.String())
+	}
+}
+
+func (s *RCServer) Shutdown() error {
+	return s.server.Shutdown()
+}
+
+func (s *RCServer) Wait() {
+	s.server.Wait()
 }
 
 // writeError writes a formatted error to the output
@@ -184,29 +223,8 @@ func writeError(path string, in rc.Params, w http.ResponseWriter, err error, sta
 }
 
 // handler reads incoming requests and dispatches them
-func (s *Server) handler(w http.ResponseWriter, r *http.Request) {
-	urlPath, ok := s.Path(w, r)
-	if !ok {
-		return
-	}
-	path := strings.TrimLeft(urlPath, "/")
-
-	allowOrigin := rcflags.Opt.AccessControlAllowOrigin
-	if allowOrigin != "" {
-		onlyOnceWarningAllowOrigin.Do(func() {
-			if allowOrigin == "*" {
-				fs.Logf(nil, "Warning: Allow origin set to *. This can cause serious security problems.")
-			}
-		})
-		w.Header().Add("Access-Control-Allow-Origin", allowOrigin)
-	} else {
-		w.Header().Add("Access-Control-Allow-Origin", s.URL())
-	}
-
-	// echo back access control headers client needs
-	//reqAccessHeaders := r.Header.Get("Access-Control-Request-Headers")
-	w.Header().Add("Access-Control-Request-Method", "POST, OPTIONS, GET, HEAD")
-	w.Header().Add("Access-Control-Allow-Headers", "authorization, Content-Type")
+func (s *RCServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimLeft(r.URL.Path, "/")
 
 	switch r.Method {
 	case "POST":
@@ -216,12 +234,12 @@ func (s *Server) handler(w http.ResponseWriter, r *http.Request) {
 	case "GET", "HEAD":
 		s.handleGet(w, r, path)
 	default:
-		writeError(path, nil, w, fmt.Errorf("method %q not allowed", r.Method), http.StatusMethodNotAllowed)
+		s.handleMethodNotAllowed(w, r, path)
 		return
 	}
 }
 
-func (s *Server) handlePost(w http.ResponseWriter, r *http.Request, path string) {
+func (s *RCServer) handlePost(w http.ResponseWriter, r *http.Request, path string) {
 	ctx := r.Context()
 	contentType := r.Header.Get("Content-Type")
 
@@ -260,7 +278,7 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request, path string)
 	}
 
 	// Check to see if it requires authorisation
-	if !s.opt.NoAuth && call.AuthRequired && !s.UsingAuth() {
+	if !libhttp.IsUnixSocket(r) && !s.opt.NoAuth && call.AuthRequired && !libhttp.IsAuthenticated(r) {
 		writeError(path, in, w, fmt.Errorf("authentication must be set up on the rc server to use %q or the --rc-no-auth flag must be in use", path), http.StatusForbidden)
 		return
 	}
@@ -298,14 +316,14 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request, path string)
 	}
 }
 
-func (s *Server) handleOptions(w http.ResponseWriter, r *http.Request, path string) {
+func (s *RCServer) handleOptions(w http.ResponseWriter, r *http.Request, path string) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func (s *Server) serveRoot(w http.ResponseWriter, r *http.Request) {
+func (s *RCServer) serveRoot(w http.ResponseWriter, r *http.Request) {
 	remotes := config.FileSections()
 	sort.Strings(remotes)
-	directory := serve.NewDirectory("", s.HTMLTemplate)
+	directory := serve.NewDirectory("", s.server.HTMLTemplate())
 	directory.Name = "List of all rclone remotes."
 	q := url.Values{}
 	for _, remote := range remotes {
@@ -319,7 +337,7 @@ func (s *Server) serveRoot(w http.ResponseWriter, r *http.Request) {
 	directory.Serve(w, r)
 }
 
-func (s *Server) serveRemote(w http.ResponseWriter, r *http.Request, path string, fsName string) {
+func (s *RCServer) serveRemote(w http.ResponseWriter, r *http.Request, path string, fsName string) {
 	f, err := cache.Get(s.ctx, fsName)
 	if err != nil {
 		writeError(path, nil, w, fmt.Errorf("failed to make Fs: %w", err), http.StatusInternalServerError)
@@ -333,7 +351,7 @@ func (s *Server) serveRemote(w http.ResponseWriter, r *http.Request, path string
 			return
 		}
 		// Make the entries for display
-		directory := serve.NewDirectory(path, s.HTMLTemplate)
+		directory := serve.NewDirectory(path, s.server.HTMLTemplate())
 		for _, entry := range entries {
 			_, isDir := entry.(fs.Directory)
 			//directory.AddHTMLEntry(entry.Remote(), isDir, entry.Size(), entry.ModTime(r.Context()))
@@ -358,7 +376,7 @@ func (s *Server) serveRemote(w http.ResponseWriter, r *http.Request, path string
 // Match URLS of the form [fs]/remote
 var fsMatch = regexp.MustCompile(`^\[(.*?)\](.*)$`)
 
-func (s *Server) handleGet(w http.ResponseWriter, r *http.Request, path string) {
+func (s *RCServer) handleGet(w http.ResponseWriter, r *http.Request, path string) {
 	// Look to see if this has an fs in the path
 	fsMatchResult := fsMatch.FindStringSubmatch(path)
 
@@ -400,4 +418,8 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request, path string) 
 		return
 	}
 	http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+}
+
+func (s *RCServer) handleMethodNotAllowed(w http.ResponseWriter, r *http.Request, path string) {
+	writeError(path, nil, w, fmt.Errorf("method %q not allowed", r.Method), http.StatusMethodNotAllowed)
 }

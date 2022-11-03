@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/rclone/rclone/cmd/serve/httplib"
 	"github.com/rclone/rclone/fs"
+	libhttp "github.com/rclone/rclone/lib/http"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -77,9 +77,10 @@ func TestOptionsGetMarshal(t *testing.T) {
 	defer clearOptionBlock()()
 	ctx := context.Background()
 	ci := fs.GetConfig(ctx)
+	cfg := libhttp.DefaultHTTPCfg()
 
 	// Add some real options
-	AddOption("http", &httplib.DefaultOpt)
+	AddOption("http", &cfg)
 	AddOption("main", ci)
 	AddOption("rc", &DefaultOpt)
 

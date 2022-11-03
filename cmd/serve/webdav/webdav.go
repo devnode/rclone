@@ -5,19 +5,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/rclone/rclone/cmd"
-	"github.com/rclone/rclone/cmd/serve/httplib"
-	"github.com/rclone/rclone/cmd/serve/httplib/httpflags"
 	"github.com/rclone/rclone/cmd/serve/proxy"
 	"github.com/rclone/rclone/cmd/serve/proxy/proxyflags"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config/flags"
 	"github.com/rclone/rclone/fs/hash"
+	"github.com/rclone/rclone/lib/atexit"
+	libhttp "github.com/rclone/rclone/lib/http"
 	"github.com/rclone/rclone/lib/http/serve"
 	"github.com/rclone/rclone/vfs"
 	"github.com/rclone/rclone/vfs/vfsflags"
@@ -25,19 +28,54 @@ import (
 	"golang.org/x/net/webdav"
 )
 
+// Options required for http server
+type Options struct {
+	Auth           libhttp.AuthConfig
+	HTTP           libhttp.HTTPConfig
+	Template       libhttp.TemplateConfig
+	HashName       string
+	DisableDirList bool
+}
+
 var (
-	hashName      string
-	hashType      = hash.None
-	disableGETDir = false
+	hashType = hash.None
+
+	// DefaultOpt is the default values used for Options
+	DefaultOpt = Options{
+		// Auth:     libhttp.DefaultAuthCfg(),
+		// HTTP:     libhttp.DefaultHTTPCfg(),
+		// Template: libhttp.DefaultTemplateCfg(),
+	}
+
+	// Opt is options set by command line flags
+	Opt = DefaultOpt
 )
 
 func init() {
+	methods := []string{
+		"COPY",
+		"LOCK",
+		"MKCOL",
+		"MOVE",
+		"OPTIONS",
+		"PROPFIND",
+		"PROPPATCH",
+		"TRACE",
+		"UNLOCK",
+	}
+
+	for _, mm := range methods {
+		chi.RegisterMethod(mm)
+	}
+
 	flagSet := Command.Flags()
-	httpflags.AddFlags(flagSet)
+	libhttp.AddAuthFlagsPrefix(flagSet, "", &Opt.Auth)
+	libhttp.AddHTTPFlagsPrefix(flagSet, "", &Opt.HTTP)
+	libhttp.AddTemplateFlagsPrefix(flagSet, "", &Opt.Template)
+	flags.StringVarP(flagSet, &Opt.HashName, "etag-hash", "", Opt.HashName, "Which hash to use for the ETag, or auto or blank for off")
+	flags.BoolVarP(flagSet, &Opt.DisableDirList, "disable-dir-list", "", Opt.DisableDirList, "Disable HTML directory list on GET request for a directory")
 	vfsflags.AddFlags(flagSet)
 	proxyflags.AddFlags(flagSet)
-	flags.StringVarP(flagSet, &hashName, "etag-hash", "", "", "Which hash to use for the ETag, or auto or blank for off")
-	flags.BoolVarP(flagSet, &disableGETDir, "disable-dir-list", "", false, "Disable HTML directory list on GET request for a directory")
 }
 
 // Command definition for cobra
@@ -60,7 +98,7 @@ supported hash on the backend or you can use a named hash such as
 "MD5" or "SHA-1". Use the [hashsum](/commands/rclone_hashsum/) command
 to see the full list.
 
-` + httplib.Help + vfs.Help + proxy.Help,
+` + libhttp.Help + libhttp.TemplateHelp + libhttp.AuthHelp + vfs.Help + proxy.Help,
 	RunE: func(command *cobra.Command, args []string) error {
 		var f fs.Fs
 		if proxyflags.Opt.AuthProxy == "" {
@@ -69,11 +107,12 @@ to see the full list.
 		} else {
 			cmd.CheckArgs(0, 0, command, args)
 		}
+
 		hashType = hash.None
-		if hashName == "auto" {
+		if Opt.HashName == "auto" {
 			hashType = f.Hashes().GetOne()
-		} else if hashName != "" {
-			err := hashType.Set(hashName)
+		} else if Opt.HashName != "" {
+			err := hashType.Set(Opt.HashName)
 			if err != nil {
 				return err
 			}
@@ -81,13 +120,26 @@ to see the full list.
 		if hashType != hash.None {
 			fs.Debugf(f, "Using hash %v for ETag", hashType)
 		}
+
 		cmd.Run(false, false, command, func() error {
-			s := newWebDAV(context.Background(), f, &httpflags.Opt)
-			err := s.serve()
+			s, err := newWebDAV(context.Background(), f, &Opt)
 			if err != nil {
 				return err
 			}
-			s.Wait()
+
+			var finaliseOnce sync.Once
+			finalise := func() {
+				finaliseOnce.Do(func() {
+					if err := s.server.Shutdown(); err != nil {
+						log.Printf("error shutting down server: %v", err)
+					}
+				})
+			}
+			fnHandle := atexit.Register(finalise)
+			defer atexit.Unregister(fnHandle)
+
+			s.server.Wait()
+
 			return nil
 		})
 		return nil
@@ -107,41 +159,63 @@ to see the full list.
 // might apply". In particular, whether or not renaming a file or directory
 // overwriting another existing file or directory is an error is OS-dependent.
 type WebDAV struct {
-	*httplib.Server
 	f             fs.Fs
 	_vfs          *vfs.VFS // don't use directly, use getVFS
 	webdavhandler *webdav.Handler
 	proxy         *proxy.Proxy
 	ctx           context.Context // for global config
+	server        libhttp.Server
+	opt           *Options
 }
 
 // check interface
 var _ webdav.FileSystem = (*WebDAV)(nil)
 
 // Make a new WebDAV to serve the remote
-func newWebDAV(ctx context.Context, f fs.Fs, opt *httplib.Options) *WebDAV {
+func newWebDAV(ctx context.Context, f fs.Fs, opt *Options) (*WebDAV, error) {
+	var err error
+
 	w := &WebDAV{
-		f:   f,
 		ctx: ctx,
+		f:   f,
+		opt: opt,
 	}
+
 	if proxyflags.Opt.AuthProxy != "" {
 		w.proxy = proxy.New(ctx, &proxyflags.Opt)
 		// override auth
 		copyOpt := *opt
-		copyOpt.Auth = w.auth
+		copyOpt.Auth.CustomAuthFn = w.auth
 		opt = &copyOpt
 	} else {
 		w._vfs = vfs.New(f, &vfsflags.Opt)
 	}
-	w.Server = httplib.NewServer(http.HandlerFunc(w.handler), opt)
+
+	w.server, err = libhttp.NewServer(ctx,
+		libhttp.WithConfig(opt.HTTP),
+		libhttp.WithAuth(opt.Auth),
+		libhttp.WithTemplate(opt.Template),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to init server: %w", err)
+	}
+
 	webdavHandler := &webdav.Handler{
-		Prefix:     w.Server.Opt.BaseURL,
+		Prefix:     opt.HTTP.BaseURL,
 		FileSystem: w,
 		LockSystem: webdav.NewMemLS(),
 		Logger:     w.logRequest, // FIXME
 	}
 	w.webdavhandler = webdavHandler
-	return w
+
+	w.server.Router().Mount("/", w)
+	w.server.Serve()
+
+	for _, uu := range w.server.URLs() {
+		fs.Logf(w.f, "WebDav Server started on %s", uu)
+	}
+
+	return w, nil
 }
 
 // Gets the VFS in use for this request
@@ -149,7 +223,7 @@ func (w *WebDAV) getVFS(ctx context.Context) (VFS *vfs.VFS, err error) {
 	if w._vfs != nil {
 		return w._vfs, nil
 	}
-	value := ctx.Value(httplib.ContextAuthKey)
+	value := libhttp.CtxGetAuth(ctx)
 	if value == nil {
 		return nil, errors.New("no VFS found in context")
 	}
@@ -169,17 +243,15 @@ func (w *WebDAV) auth(user, pass string) (value interface{}, err error) {
 	return VFS, err
 }
 
-func (w *WebDAV) handler(rw http.ResponseWriter, r *http.Request) {
-	urlPath, ok := w.Path(rw, r)
-	if !ok {
-		return
-	}
+func (w *WebDAV) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
+	urlPath := r.URL.Path
 	isDir := strings.HasSuffix(urlPath, "/")
 	remote := strings.Trim(urlPath, "/")
-	if !disableGETDir && (r.Method == "GET" || r.Method == "HEAD") && isDir {
+	if !w.opt.DisableDirList && (r.Method == "GET" || r.Method == "HEAD") && isDir {
 		w.serveDir(rw, r, remote)
 		return
 	}
+
 	w.webdavhandler.ServeHTTP(rw, r)
 }
 
@@ -214,7 +286,7 @@ func (w *WebDAV) serveDir(rw http.ResponseWriter, r *http.Request, dirRemote str
 	}
 
 	// Make the entries for display
-	directory := serve.NewDirectory(dirRemote, w.HTMLTemplate)
+	directory := serve.NewDirectory(dirRemote, w.server.HTMLTemplate())
 	for _, node := range dirEntries {
 		if vfsflags.Opt.NoModTime {
 			directory.AddHTMLEntry(node.Path(), node.IsDir(), node.Size(), time.Time{})
@@ -230,20 +302,12 @@ func (w *WebDAV) serveDir(rw http.ResponseWriter, r *http.Request, dirRemote str
 	directory.Serve(rw, r)
 }
 
-// serve runs the http server in the background.
-//
-// Use s.Close() and s.Wait() to shutdown server
-func (w *WebDAV) serve() error {
-	err := w.Serve()
-	if err != nil {
-		return err
-	}
-	fs.Logf(w.f, "WebDav Server started on %s", w.URL())
-	return nil
-}
-
 // logRequest is called by the webdav module on every request
 func (w *WebDAV) logRequest(r *http.Request, err error) {
+	// TODO: imrpove this
+	// if err != nil {
+	// 	log.Println(r.Method, err)
+	// }
 	fs.Infof(r.URL.Path, "%s from %s", r.Method, r.RemoteAddr)
 }
 

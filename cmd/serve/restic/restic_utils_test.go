@@ -53,3 +53,9 @@ type TestRequest struct {
 	req  *http.Request
 	want []wantFunc
 }
+
+func testGetServerURL(t *testing.T, r *Restic) string {
+	urls := r.server.URLs()
+	require.GreaterOrEqual(t, len(urls), 1, "server should return at least one url")
+	return urls[0]
+}

@@ -11,7 +11,7 @@ package webdav
 import (
 	"context"
 	"flag"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -19,7 +19,6 @@ import (
 	"time"
 
 	_ "github.com/rclone/rclone/backend/local"
-	"github.com/rclone/rclone/cmd/serve/httplib"
 	"github.com/rclone/rclone/cmd/serve/servetest"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config/configmap"
@@ -45,34 +44,41 @@ var (
 	_ webdav.ContentTyper = FileInfo{nil}
 )
 
+func testGetServerURL(t *testing.T, w *WebDAV) string {
+	urls := w.server.URLs()
+	require.GreaterOrEqual(t, len(urls), 1, "server should return at least one url")
+	return urls[0]
+}
+
 // TestWebDav runs the webdav server then runs the unit tests for the
 // webdav remote against it.
 func TestWebDav(t *testing.T) {
 	// Configure and start the server
 	start := func(f fs.Fs) (configmap.Simple, func()) {
-		opt := httplib.DefaultOpt
-		opt.ListenAddr = testBindAddress
-		opt.BasicUser = testUser
-		opt.BasicPass = testPass
-		opt.Template = testTemplate
+		opt := DefaultOpt
+		opt.HTTP.ListenAddr = []string{testBindAddress}
+		opt.Auth.BasicUser = testUser
+		opt.Auth.BasicPass = testPass
+		opt.Template.Path = testTemplate
 		hashType = hash.MD5
 
 		// Start the server
-		w := newWebDAV(context.Background(), f, &opt)
-		assert.NoError(t, w.serve())
+		w, err := newWebDAV(context.Background(), f, &opt)
+		require.NoError(t, err)
 
+		url := testGetServerURL(t, w)
 		// Config for the backend we'll use to connect to the server
 		config := configmap.Simple{
 			"type":   "webdav",
 			"vendor": "other",
-			"url":    w.Server.URL(),
+			"url":    url,
 			"user":   testUser,
 			"pass":   obscure.MustObscure(testPass),
 		}
 
 		return config, func() {
-			w.Close()
-			w.Wait()
+			require.NoError(t, w.server.Shutdown())
+			// w.Wait()
 		}
 	}
 
@@ -98,18 +104,19 @@ func TestHTTPFunction(t *testing.T) {
 	f, err := fs.NewFs(context.Background(), "../http/testdata/files")
 	assert.NoError(t, err)
 
-	opt := httplib.DefaultOpt
-	opt.ListenAddr = testBindAddress
-	opt.Template = testTemplate
+	opt := DefaultOpt
+	// opt.Auth = libhttp.DefaultAuthCfg()
+	opt.HTTP.ListenAddr = []string{testBindAddress}
+	opt.Template.Path = testTemplate
 
 	// Start the server
-	w := newWebDAV(context.Background(), f, &opt)
-	assert.NoError(t, w.serve())
+	w, err := newWebDAV(context.Background(), f, &opt)
+	require.NoError(t, err)
 	defer func() {
-		w.Close()
-		w.Wait()
+		require.NoError(t, w.server.Shutdown())
 	}()
-	testURL := w.Server.URL()
+
+	testURL := testGetServerURL(t, w)
 	pause := time.Millisecond
 	i := 0
 	for ; i < 10; i++ {
@@ -134,10 +141,10 @@ func TestHTTPFunction(t *testing.T) {
 func checkGolden(t *testing.T, fileName string, got []byte) {
 	if *updateGolden {
 		t.Logf("Updating golden file %q", fileName)
-		err := ioutil.WriteFile(fileName, got, 0666)
+		err := os.WriteFile(fileName, got, 0666)
 		require.NoError(t, err)
 	} else {
-		want, err := ioutil.ReadFile(fileName)
+		want, err := os.ReadFile(fileName)
 		require.NoError(t, err, "problem")
 		wants := strings.Split(string(want), "\n")
 		gots := strings.Split(string(got), "\n")
@@ -145,7 +152,10 @@ func checkGolden(t *testing.T, fileName string, got []byte) {
 	}
 }
 
-func HelpTestGET(t *testing.T, testURL string) {
+func HelpTestGET(t *testing.T, baseURL string) {
+	if !strings.HasSuffix(baseURL, "/") {
+		baseURL += "/"
+	}
 	for _, test := range []struct {
 		URL    string
 		Status int
@@ -245,7 +255,7 @@ func HelpTestGET(t *testing.T, testURL string) {
 		if method == "" {
 			method = "GET"
 		}
-		req, err := http.NewRequest(method, testURL+test.URL, nil)
+		req, err := http.NewRequest(method, baseURL+test.URL, nil)
 		require.NoError(t, err)
 		if test.Range != "" {
 			req.Header.Add("Range", test.Range)
@@ -253,7 +263,7 @@ func HelpTestGET(t *testing.T, testURL string) {
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
 		assert.Equal(t, test.Status, resp.StatusCode, test.Golden)
-		body, err := ioutil.ReadAll(resp.Body)
+		body, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
 
 		checkGolden(t, test.Golden, body)

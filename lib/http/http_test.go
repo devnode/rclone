@@ -1,515 +1,430 @@
 package http
 
 import (
+	"context"
 	"crypto/tls"
+	"io"
 	"net"
 	"net/http"
-	"reflect"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
-	"golang.org/x/net/nettest"
-
-	"github.com/go-chi/chi/v5"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestGetOptions(t *testing.T) {
-	tests := []struct {
-		name string
-		want Options
-	}{
-		{name: "basic", want: defaultServerOptions},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := GetOptions(); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("GetOptions() = %v, want %v", got, tt.want)
-			}
-		})
-	}
+func testEchoHandler(data []byte) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(data)
+	})
 }
 
-func TestMount(t *testing.T) {
-	type args struct {
-		pattern string
-		h       http.Handler
-	}
-	tests := []struct {
-		name    string
-		args    args
-		wantErr bool
-	}{
-		{name: "basic", args: args{
-			pattern: "/",
-			h:       http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {}),
-		}, wantErr: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if tt.wantErr {
-				require.Error(t, Mount(tt.args.pattern, tt.args.h))
-			} else {
-				require.NoError(t, Mount(tt.args.pattern, tt.args.h))
-			}
-			assert.NotNil(t, defaultServer)
-			assert.True(t, defaultServer.baseRouter.Match(chi.NewRouteContext(), "GET", tt.args.pattern), "Failed to match route after registering")
-		})
-		if err := Shutdown(); err != nil {
-			t.Fatal(err)
-		}
-	}
+func testExpectRespBody(t *testing.T, resp *http.Response, expected []byte) {
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, expected, body)
 }
 
-func TestNewServer(t *testing.T) {
-	type args struct {
-		listeners    []net.Listener
-		tlsListeners []net.Listener
-		opt          Options
-	}
-	listener, err := nettest.NewLocalListener("tcp")
-	if err != nil {
-		t.Fatal(err)
-	}
-	tests := []struct {
-		name    string
-		args    args
-		wantErr bool
-	}{
-		{name: "default http", args: args{
-			listeners:    []net.Listener{listener},
-			tlsListeners: []net.Listener{},
-			opt:          defaultServerOptions,
-		}, wantErr: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := NewServer(tt.args.listeners, tt.args.tlsListeners, tt.args.opt)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("NewServer() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			s, ok := got.(*server)
-			require.True(t, ok, "NewServer returned unexpected type")
-			if len(tt.args.listeners) > 0 {
-				assert.Equal(t, listener.Addr(), s.addrs[0])
-			} else {
-				assert.Empty(t, s.addrs)
-			}
-			if len(tt.args.tlsListeners) > 0 {
-				assert.Equal(t, listener.Addr(), s.tlsAddrs[0])
-			} else {
-				assert.Empty(t, s.tlsAddrs)
-			}
-			if tt.args.opt.BaseURL != "" {
-				assert.NotSame(t, s.baseRouter, s.httpServer.Handler, "should have wrapped baseRouter")
-			} else {
-				assert.Same(t, s.baseRouter, s.httpServer.Handler, "should be baseRouter")
-			}
-			if useSSL(tt.args.opt) {
-				assert.NotNil(t, s.httpServer.TLSConfig, "missing SSL config")
-			} else {
-				assert.Nil(t, s.httpServer.TLSConfig, "unexpectedly has SSL config")
-			}
-		})
-	}
+func testGetServerURL(t *testing.T, s Server) string {
+	urls := s.URLs()
+	require.GreaterOrEqual(t, len(urls), 1, "server should return at least one url")
+	return urls[0]
 }
 
-func TestRestart(t *testing.T) {
-	tests := []struct {
-		name    string
-		started bool
-		wantErr bool
-	}{
-		{name: "started", started: true, wantErr: false},
-		{name: "stopped", started: false, wantErr: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if tt.started {
-				require.NoError(t, Restart()) // Call it twice basically
-			} else {
-				require.NoError(t, Shutdown())
-			}
-			current := defaultServer
-			if err := Restart(); (err != nil) != tt.wantErr {
-				t.Errorf("Restart() error = %v, wantErr %v", err, tt.wantErr)
-			}
-			assert.NotNil(t, defaultServer, "failed to start default server")
-			assert.NotSame(t, current, defaultServer, "same server instance as before restart")
-		})
-	}
-}
-
-func TestRoute(t *testing.T) {
-	type args struct {
-		pattern string
-		fn      func(r chi.Router)
-	}
-	tests := []struct {
-		name string
-		args args
-		test func(t *testing.T, r chi.Router)
-	}{
-		{
-			name: "basic",
-			args: args{
-				pattern: "/basic",
-				fn:      func(r chi.Router) {},
-			},
-			test: func(t *testing.T, r chi.Router) {
-				require.Len(t, r.Routes(), 1)
-				assert.Equal(t, r.Routes()[0].Pattern, "/basic/*")
+func testNewHTTPClientUnix(path string) *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+				return net.Dial("unix", path)
 			},
 		},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			require.NoError(t, Restart())
-			_, err := Route(tt.args.pattern, tt.args.fn)
-			require.NoError(t, err)
-			tt.test(t, defaultServer.baseRouter)
-		})
+}
 
-		if err := Shutdown(); err != nil {
-			t.Fatal(err)
-		}
+func testReadTestdataFile(t *testing.T, path string) []byte {
+	data, err := os.ReadFile(filepath.Join("./testdata", path))
+	require.NoError(t, err, "")
+	return data
+}
+
+func TestNewServerUnix(t *testing.T) {
+	ctx := context.Background()
+
+	tempDir := t.TempDir()
+	path := filepath.Join(tempDir, "rclone.sock")
+
+	cfg := DefaultHTTPCfg()
+	cfg.ListenAddr = []string{path}
+
+	auth := AuthConfig{
+		BasicUser: "test",
+		BasicPass: "test",
+	}
+
+	s, err := NewServer(ctx, WithConfig(cfg), WithAuth(auth))
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, s.Shutdown())
+		_, err := os.Stat(path)
+		require.ErrorIs(t, err, os.ErrNotExist, "shutdown should remove socket")
+	}()
+
+	require.Empty(t, s.URLs(), "unix socket should not appear in URLs")
+
+	s.Router().Use(MiddlewareCORS(""))
+
+	expected := []byte("hello world")
+	s.Router().Mount("/", testEchoHandler(expected))
+	s.Serve()
+
+	client := testNewHTTPClientUnix(path)
+	req, err := http.NewRequest("GET", "http://unix", nil)
+	require.NoError(t, err)
+
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+
+	testExpectRespBody(t, resp, expected)
+
+	require.Equal(t, http.StatusOK, resp.StatusCode, "unix sockets should ignore auth")
+
+	for _, key := range _testCORSHeaderKeys {
+		require.NotContains(t, resp.Header, key, "unix sockets should not be sent CORS headers")
 	}
 }
 
-func TestSetOptions(t *testing.T) {
-	type args struct {
-		opt Options
+func TestNewServerHTTP(t *testing.T) {
+	ctx := context.Background()
+
+	cfg := DefaultHTTPCfg()
+	cfg.ListenAddr = []string{"127.0.0.1:0"}
+
+	auth := AuthConfig{
+		BasicUser: "test",
+		BasicPass: "test",
 	}
-	tests := []struct {
+
+	s, err := NewServer(ctx, WithConfig(cfg), WithAuth(auth))
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, s.Shutdown())
+	}()
+
+	url := testGetServerURL(t, s)
+	require.True(t, strings.HasPrefix(url, "http://"), "url should have http scheme")
+
+	expected := []byte("hello world")
+	s.Router().Mount("/", testEchoHandler(expected))
+	s.Serve()
+
+	t.Run("StatusUnauthorized", func(t *testing.T) {
+		client := &http.Client{}
+		req, err := http.NewRequest("GET", url, nil)
+		require.NoError(t, err)
+
+		resp, err := client.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+
+		require.Equal(t, http.StatusUnauthorized, resp.StatusCode, "no basic auth creds should return unauthorized")
+	})
+
+	t.Run("StatusOK", func(t *testing.T) {
+		client := &http.Client{}
+		req, err := http.NewRequest("GET", url, nil)
+		require.NoError(t, err)
+
+		req.SetBasicAuth(auth.BasicUser, auth.BasicPass)
+
+		resp, err := client.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+
+		require.Equal(t, http.StatusOK, resp.StatusCode, "using basic auth creds should return ok")
+
+		testExpectRespBody(t, resp, expected)
+	})
+}
+func TestNewServerBaseURL(t *testing.T) {
+	servers := []struct {
 		name string
-		args args
+		http HTTPConfig
 	}{
 		{
-			name: "basic",
-			args: args{opt: Options{
-				ListenAddr:         "127.0.0.1:9999",
-				BaseURL:            "/basic",
-				ServerReadTimeout:  1,
-				ServerWriteTimeout: 1,
-				MaxHeaderBytes:     1,
-			}},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			SetOptions(tt.args.opt)
-			require.Equal(t, tt.args.opt, defaultServerOptions)
-			require.NoError(t, Restart())
-			if useSSL(tt.args.opt) {
-				assert.Equal(t, tt.args.opt.ListenAddr, defaultServer.tlsAddrs[0].String())
-			} else {
-				assert.Equal(t, tt.args.opt.ListenAddr, defaultServer.addrs[0].String())
-			}
-			assert.Equal(t, tt.args.opt.ServerReadTimeout, defaultServer.httpServer.ReadTimeout)
-			assert.Equal(t, tt.args.opt.ServerWriteTimeout, defaultServer.httpServer.WriteTimeout)
-			assert.Equal(t, tt.args.opt.MaxHeaderBytes, defaultServer.httpServer.MaxHeaderBytes)
-			if tt.args.opt.BaseURL != "" && tt.args.opt.BaseURL != "/" {
-				assert.NotSame(t, defaultServer.httpServer.Handler, defaultServer.baseRouter, "BaseURL ignored")
-			}
-		})
-		SetOptions(DefaultOpt)
-	}
-}
-
-func TestShutdown(t *testing.T) {
-	tests := []struct {
-		name    string
-		started bool
-		wantErr bool
-	}{
-		{name: "started", started: true, wantErr: false},
-		{name: "stopped", started: false, wantErr: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if tt.started {
-				require.NoError(t, Restart())
-			} else {
-				require.NoError(t, Shutdown()) // Call it twice basically
-			}
-			if err := Shutdown(); (err != nil) != tt.wantErr {
-				t.Errorf("Shutdown() error = %v, wantErr %v", err, tt.wantErr)
-			}
-			assert.Nil(t, defaultServer, "default server not deleted")
-		})
-	}
-}
-
-func TestURL(t *testing.T) {
-	tests := []struct {
-		name string
-		want string
-	}{
-		{name: "basic", want: "http://127.0.0.1:8080/"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			require.NoError(t, Restart())
-			if got := URL(); got != tt.want {
-				t.Errorf("URL() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func Test_server_Mount(t *testing.T) {
-	type args struct {
-		pattern string
-		h       http.Handler
-	}
-	tests := []struct {
-		name string
-		args args
-		opt  Options
-	}{
-		{name: "basic", args: args{
-			pattern: "/",
-			h:       http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {}),
-		}, opt: defaultServerOptions},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			listener, err := nettest.NewLocalListener("tcp")
-			require.NoError(t, err)
-			s, err2 := NewServer([]net.Listener{listener}, []net.Listener{}, tt.opt)
-			require.NoError(t, err2)
-			s.Mount(tt.args.pattern, tt.args.h)
-			srv, ok := s.(*server)
-			require.True(t, ok)
-			assert.NotNil(t, srv)
-			assert.True(t, srv.baseRouter.Match(chi.NewRouteContext(), "GET", tt.args.pattern), "Failed to Match() route after registering")
-		})
-	}
-}
-
-func Test_server_Route(t *testing.T) {
-	type args struct {
-		pattern string
-		fn      func(r chi.Router)
-	}
-	tests := []struct {
-		name string
-		args args
-		opt  Options
-		test func(t *testing.T, r chi.Router)
-	}{
-		{
-			name: "basic",
-			args: args{
-				pattern: "/basic",
-				fn: func(r chi.Router) {
-
-				},
+			name: "Empty",
+			http: HTTPConfig{
+				ListenAddr: []string{"127.0.0.1:0"},
+				BaseURL:    "",
 			},
-			test: func(t *testing.T, r chi.Router) {
-				require.Len(t, r.Routes(), 1)
-				assert.Equal(t, r.Routes()[0].Pattern, "/basic/*")
+		},
+		{
+			name: "Single/NoTrailingSlash",
+			http: HTTPConfig{
+				ListenAddr: []string{"127.0.0.1:0"},
+				BaseURL:    "/rclone",
+			},
+		},
+		{
+			name: "Single/TrailingSlash",
+			http: HTTPConfig{
+				ListenAddr: []string{"127.0.0.1:0"},
+				BaseURL:    "/rclone/",
+			},
+		},
+		{
+			name: "Multi/NoTrailingSlash",
+			http: HTTPConfig{
+				ListenAddr: []string{"127.0.0.1:0"},
+				BaseURL:    "/rclone/test/base/url",
+			},
+		},
+		{
+			name: "Multi/TrailingSlash",
+			http: HTTPConfig{
+				ListenAddr: []string{"127.0.0.1:0"},
+				BaseURL:    "/rclone/test/base/url/",
 			},
 		},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			listener, err := nettest.NewLocalListener("tcp")
-			require.NoError(t, err)
-			s, err2 := NewServer([]net.Listener{listener}, []net.Listener{}, tt.opt)
-			require.NoError(t, err2)
-			s.Route(tt.args.pattern, tt.args.fn)
-			srv, ok := s.(*server)
-			require.True(t, ok)
-			assert.NotNil(t, srv)
-			tt.test(t, srv.baseRouter)
-		})
-	}
-}
 
-func Test_server_Shutdown(t *testing.T) {
-	tests := []struct {
-		name    string
-		opt     Options
-		wantErr bool
-	}{
-		{
-			name:    "basic",
-			opt:     defaultServerOptions,
-			wantErr: false,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			listener, err := nettest.NewLocalListener("tcp")
+	for _, ss := range servers {
+		t.Run(ss.name, func(t *testing.T) {
+			s, err := NewServer(context.Background(), WithConfig(ss.http))
 			require.NoError(t, err)
-			s, err2 := NewServer([]net.Listener{listener}, []net.Listener{}, tt.opt)
-			require.NoError(t, err2)
-			srv, ok := s.(*server)
-			require.True(t, ok)
-			if err := s.Shutdown(); (err != nil) != tt.wantErr {
-				t.Errorf("Shutdown() error = %v, wantErr %v", err, tt.wantErr)
-			}
-			assert.EqualError(t, srv.httpServer.Serve(listener), http.ErrServerClosed.Error())
-		})
-	}
-}
-
-func Test_start(t *testing.T) {
-	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
-	sslServerOptions := defaultServerOptions
-	sslServerOptions.SslCertBody = []byte(`-----BEGIN CERTIFICATE-----
-MIIBhTCCASugAwIBAgIQIRi6zePL6mKjOipn+dNuaTAKBggqhkjOPQQDAjASMRAw
-DgYDVQQKEwdBY21lIENvMB4XDTE3MTAyMDE5NDMwNloXDTE4MTAyMDE5NDMwNlow
-EjEQMA4GA1UEChMHQWNtZSBDbzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABD0d
-7VNhbWvZLWPuj/RtHFjvtJBEwOkhbN/BnnE8rnZR8+sbwnc/KhCk3FhnpHZnQz7B
-5aETbbIgmuvewdjvSBSjYzBhMA4GA1UdDwEB/wQEAwICpDATBgNVHSUEDDAKBggr
-BgEFBQcDATAPBgNVHRMBAf8EBTADAQH/MCkGA1UdEQQiMCCCDmxvY2FsaG9zdDo1
-NDUzgg4xMjcuMC4wLjE6NTQ1MzAKBggqhkjOPQQDAgNIADBFAiEA2zpJEPQyz6/l
-Wf86aX6PepsntZv2GYlA5UpabfT2EZICICpJ5h/iI+i341gBmLiAFQOyTDT+/wQc
-6MF9+Yw1Yy0t
------END CERTIFICATE-----`)
-	sslServerOptions.SslKeyBody = []byte(`-----BEGIN EC PRIVATE KEY-----
-MHcCAQEEIIrYSSNQFaA2Hwf1duRSxKtLYX5CB04fSeQ6tF1aY/PuoAoGCCqGSM49
-AwEHoUQDQgAEPR3tU2Fta9ktY+6P9G0cWO+0kETA6SFs38GecTyudlHz6xvCdz8q
-EKTcWGekdmdDPsHloRNtsiCa697B2O9IFA==
------END EC PRIVATE KEY-----`)
-	tests := []struct {
-		name    string
-		opt     Options
-		ssl     bool
-		wantErr bool
-	}{
-		{
-			name:    "basic",
-			opt:     defaultServerOptions,
-			wantErr: false,
-		},
-		{
-			name:    "ssl",
-			opt:     sslServerOptions,
-			ssl:     true,
-			wantErr: false,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
 			defer func() {
-				err := Shutdown()
-				if err != nil {
-					t.Fatal("couldn't shutdown server")
-				}
+				require.NoError(t, s.Shutdown())
 			}()
-			SetOptions(tt.opt)
-			if err := start(); (err != nil) != tt.wantErr {
-				t.Errorf("start() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			s := defaultServer
-			router := s.Router()
-			router.Head("/", func(writer http.ResponseWriter, request *http.Request) {
-				writer.WriteHeader(201)
-			})
-			testURL := URL()
-			if tt.ssl {
-				assert.True(t, useSSL(tt.opt))
-				assert.Equal(t, tt.opt.ListenAddr, s.tlsAddrs[0].String())
-				assert.True(t, strings.HasPrefix(testURL, "https://"))
-			} else {
-				assert.True(t, strings.HasPrefix(testURL, "http://"))
-				assert.Equal(t, tt.opt.ListenAddr, s.addrs[0].String())
-			}
 
-			// try to connect to the test server
-			pause := time.Millisecond
-			for i := 0; i < 10; i++ {
-				resp, err := http.Head(testURL)
-				if err == nil {
-					_ = resp.Body.Close()
-					return
-				}
-				// t.Logf("couldn't connect, sleeping for %v: %v", pause, err)
-				time.Sleep(pause)
-				pause *= 2
-			}
-			t.Fatal("couldn't connect to server")
+			expected := []byte("data")
+			s.Router().Get("/", testEchoHandler(expected).ServeHTTP)
+			s.Serve()
 
-			/* accessing s.httpServer.* can't be done synchronously and is a race condition
-			assert.Equal(t, tt.opt.ServerReadTimeout, defaultServer.httpServer.ReadTimeout)
-			assert.Equal(t, tt.opt.ServerWriteTimeout, defaultServer.httpServer.WriteTimeout)
-			assert.Equal(t, tt.opt.MaxHeaderBytes, defaultServer.httpServer.MaxHeaderBytes)
-			if tt.opt.BaseURL != "" && tt.opt.BaseURL != "/" {
-				assert.NotSame(t, s.baseRouter, s.httpServer.Handler, "should have wrapped baseRouter")
-			} else {
-				assert.Same(t, s.baseRouter, s.httpServer.Handler, "should be baseRouter")
-			}
-			if useSSL(tt.opt) {
-				require.NotNil(t, s.httpServer.TLSConfig, "missing SSL config")
-				assert.NotEmpty(t, s.httpServer.TLSConfig.Certificates, "missing SSL config")
-			} else if s.httpServer.TLSConfig != nil {
-				assert.Empty(t, s.httpServer.TLSConfig.Certificates, "unexpectedly has SSL config")
-			}
-			*/
+			url := testGetServerURL(t, s)
+			require.True(t, strings.HasPrefix(url, "http://"), "url should have http scheme")
+			require.True(t, strings.HasSuffix(url, ss.http.BaseURL), "url should include BaseURL")
+
+			client := &http.Client{}
+			req, err := http.NewRequest("GET", url, nil)
+			require.NoError(t, err)
+
+			resp, err := client.Do(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			t.Log(url, resp.Request.URL)
+
+			require.Equal(t, http.StatusOK, resp.StatusCode, "should return ok")
+
+			testExpectRespBody(t, resp, expected)
 		})
 	}
 }
 
-func Test_useSSL(t *testing.T) {
-	type args struct {
-		opt Options
-	}
-	tests := []struct {
-		name string
-		args args
-		want bool
+func TestNewServerTLS(t *testing.T) {
+	certBytes := testReadTestdataFile(t, "local.crt")
+	keyBytes := testReadTestdataFile(t, "local.key")
+
+	// TODO: generate a proper cert with SAN
+	// TODO: generate CA, test mTLS
+	// clientCert, err := tls.X509KeyPair(certBytes, keyBytes)
+	// require.NoError(t, err, "should be testing with a valid self signed certificate")
+
+	servers := []struct {
+		name    string
+		wantErr bool
+		err     error
+		http    HTTPConfig
 	}{
 		{
-			name: "basic",
-			args: args{opt: Options{
-				SslCert:  "",
-				SslKey:   "",
-				ClientCA: "",
-			}},
-			want: false,
+			name: "FromFile/Valid",
+			http: HTTPConfig{
+				ListenAddr:    []string{"127.0.0.1:0"},
+				TLSCert:       "./testdata/local.crt",
+				TLSKey:        "./testdata/local.key",
+				MinTLSVersion: "tls1.0",
+			},
 		},
 		{
-			name: "basic",
-			args: args{opt: Options{
-				SslCert:  "",
-				SslKey:   "test",
-				ClientCA: "",
-			}},
-			want: true,
+			name:    "FromFile/NoCert",
+			wantErr: true,
+			err:     ErrTLSFileMismatch,
+			http: HTTPConfig{
+				ListenAddr:    []string{"127.0.0.1:0"},
+				TLSCert:       "",
+				TLSKey:        "./testdata/local.key",
+				MinTLSVersion: "tls1.0",
+			},
 		},
 		{
-			name: "body",
-			args: args{opt: Options{
-				SslCert:    "",
-				SslKey:     "",
-				SslKeyBody: []byte(`test`),
-				ClientCA:   "",
-			}},
-			want: true,
+			name:    "FromFile/InvalidCert",
+			wantErr: true,
+			http: HTTPConfig{
+				ListenAddr:    []string{"127.0.0.1:0"},
+				TLSCert:       "./testdata/local.crt.invalid",
+				TLSKey:        "./testdata/local.key",
+				MinTLSVersion: "tls1.0",
+			},
 		},
 		{
-			name: "basic",
-			args: args{opt: Options{
-				SslCert:       "",
-				SslKey:        "test",
-				ClientCA:      "",
+			name:    "FromFile/NoKey",
+			wantErr: true,
+			err:     ErrTLSFileMismatch,
+			http: HTTPConfig{
+				ListenAddr:    []string{"127.0.0.1:0"},
+				TLSCert:       "./testdata/local.crt",
+				TLSKey:        "",
+				MinTLSVersion: "tls1.0",
+			},
+		},
+		{
+			name:    "FromFile/InvalidKey",
+			wantErr: true,
+			http: HTTPConfig{
+				ListenAddr:    []string{"127.0.0.1:0"},
+				TLSCert:       "./testdata/local.crt",
+				TLSKey:        "./testdata/local.key.invalid",
+				MinTLSVersion: "tls1.0",
+			},
+		},
+		{
+			name: "FromBody/Valid",
+			http: HTTPConfig{
+				ListenAddr:    []string{"127.0.0.1:0"},
+				TLSCertBody:   certBytes,
+				TLSKeyBody:    keyBytes,
+				MinTLSVersion: "tls1.0",
+			},
+		},
+		{
+			name:    "FromBody/NoCert",
+			wantErr: true,
+			err:     ErrTLSBodyMismatch,
+			http: HTTPConfig{
+				ListenAddr:    []string{"127.0.0.1:0"},
+				TLSCertBody:   nil,
+				TLSKeyBody:    keyBytes,
+				MinTLSVersion: "tls1.0",
+			},
+		},
+		{
+			name:    "FromBody/InvalidCert",
+			wantErr: true,
+			http: HTTPConfig{
+				ListenAddr:    []string{"127.0.0.1:0"},
+				TLSCertBody:   []byte("JUNK DATA"),
+				TLSKeyBody:    keyBytes,
+				MinTLSVersion: "tls1.0",
+			},
+		},
+		{
+			name:    "FromBody/NoKey",
+			wantErr: true,
+			err:     ErrTLSBodyMismatch,
+			http: HTTPConfig{
+				ListenAddr:    []string{"127.0.0.1:0"},
+				TLSCertBody:   certBytes,
+				TLSKeyBody:    nil,
+				MinTLSVersion: "tls1.0",
+			},
+		},
+		{
+			name:    "FromBody/InvalidKey",
+			wantErr: true,
+			http: HTTPConfig{
+				ListenAddr:    []string{"127.0.0.1:0"},
+				TLSCertBody:   certBytes,
+				TLSKeyBody:    []byte("JUNK DATA"),
+				MinTLSVersion: "tls1.0",
+			},
+		},
+		{
+			name: "MinTLSVersion/Valid/1.1",
+			http: HTTPConfig{
+				ListenAddr:    []string{"127.0.0.1:0"},
+				TLSCertBody:   certBytes,
+				TLSKeyBody:    keyBytes,
+				MinTLSVersion: "tls1.1",
+			},
+		},
+		{
+			name: "MinTLSVersion/Valid/1.2",
+			http: HTTPConfig{
+				ListenAddr:    []string{"127.0.0.1:0"},
+				TLSCertBody:   certBytes,
+				TLSKeyBody:    keyBytes,
 				MinTLSVersion: "tls1.2",
-			}},
-			want: true,
+			},
+		},
+		{
+			name: "MinTLSVersion/Valid/1.3",
+			http: HTTPConfig{
+				ListenAddr:    []string{"127.0.0.1:0"},
+				TLSCertBody:   certBytes,
+				TLSKeyBody:    keyBytes,
+				MinTLSVersion: "tls1.3",
+			},
+		},
+		{
+			name:    "MinTLSVersion/Invalid",
+			wantErr: true,
+			err:     ErrInvalidMinTLSVersion,
+			http: HTTPConfig{
+				ListenAddr:    []string{"127.0.0.1:0"},
+				TLSCertBody:   certBytes,
+				TLSKeyBody:    keyBytes,
+				MinTLSVersion: "tls0.9",
+			},
 		},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := useSSL(tt.args.opt); got != tt.want {
-				t.Errorf("useSSL() = %v, want %v", got, tt.want)
+
+	for _, ss := range servers {
+		t.Run(ss.name, func(t *testing.T) {
+			s, err := NewServer(context.Background(), WithConfig(ss.http))
+			if ss.wantErr == true {
+				if ss.err != nil {
+					require.ErrorIs(t, err, ss.err, "new server should return the expected error")
+				} else {
+					require.Error(t, err, "new server should return error for invalid TLS config")
+				}
+				return
 			}
+
+			require.NoError(t, err)
+			defer func() {
+				require.NoError(t, s.Shutdown())
+			}()
+
+			expected := []byte("secret-page")
+			s.Router().Mount("/", testEchoHandler(expected))
+			s.Serve()
+
+			url := testGetServerURL(t, s)
+			require.True(t, strings.HasPrefix(url, "https://"), "url should have https scheme")
+
+			client := &http.Client{
+				Transport: &http.Transport{
+					DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+						dest := strings.TrimPrefix(url, "https://")
+						dest = strings.TrimSuffix(dest, "/")
+						return net.Dial("tcp", dest)
+					},
+					TLSClientConfig: &tls.Config{
+						// Certificates: []tls.Certificate{clientCert},
+						InsecureSkipVerify: true,
+					},
+				},
+			}
+			req, err := http.NewRequest("GET", "https://dev.rclone.org", nil)
+			require.NoError(t, err)
+
+			resp, err := client.Do(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			require.Equal(t, http.StatusOK, resp.StatusCode, "should return ok")
+
+			testExpectRespBody(t, resp, expected)
 		})
 	}
 }
