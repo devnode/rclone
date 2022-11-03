@@ -18,9 +18,9 @@ import (
 
 // Options contains options for the remote control server
 type Options struct {
-	Auth                     *libhttp.AuthConfig
-	HTTP                     *libhttp.HTTPConfig
-	Template                 *libhttp.TemplateConfig
+	Auth                     libhttp.AuthConfig
+	HTTP                     libhttp.HTTPConfig
+	Template                 libhttp.TemplateConfig
 	Enabled                  bool   // set to enable the server
 	Serve                    bool   // set to serve files from remotes
 	Files                    string // set to enable serving files locally
@@ -38,9 +38,9 @@ type Options struct {
 
 // DefaultOpt is the default values used for Options
 var DefaultOpt = Options{
-	Auth:              libhttp.DefaultAuthCfg,
-	HTTP:              libhttp.DefaultHTTPCfg,
-	Template:          libhttp.DefaultTemplateCfg,
+	Auth:              libhttp.DefaultAuthCfg(),
+	HTTP:              libhttp.DefaultHTTPCfg(),
+	Template:          libhttp.DefaultTemplateCfg(),
 	Enabled:           false,
 	JobExpireDuration: 60 * time.Second,
 	JobExpireInterval: 10 * time.Second,

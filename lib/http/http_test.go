@@ -20,6 +20,18 @@ func testEchoHandler(data []byte) http.Handler {
 	})
 }
 
+func testExpectRespBody(t *testing.T, resp *http.Response, expected []byte) {
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, expected, body)
+}
+
+func testGetServerURL(t *testing.T, s Server) string {
+	urls := s.URLs()
+	require.GreaterOrEqual(t, len(urls), 1, "server should return at least one url")
+	return urls[0]
+}
+
 func testNewHTTPClientUnix(path string) *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{
@@ -30,16 +42,10 @@ func testNewHTTPClientUnix(path string) *http.Client {
 	}
 }
 
-func testGetServerURL(t *testing.T, s Server) string {
-	urls := s.URLs()
-	require.GreaterOrEqual(t, len(urls), 1, "server should return at least one url")
-	return urls[0]
-}
-
-func testExpectRespBody(t *testing.T, resp *http.Response, expected []byte) {
-	body, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
-	require.Equal(t, expected, body)
+func testReadTestdataFile(t *testing.T, path string) []byte {
+	data, err := os.ReadFile(filepath.Join("./testdata", path))
+	require.NoError(t, err, "")
+	return data
 }
 
 func TestNewServerUnix(t *testing.T) {
@@ -48,10 +54,10 @@ func TestNewServerUnix(t *testing.T) {
 	tempDir := t.TempDir()
 	path := filepath.Join(tempDir, "rclone.sock")
 
-	cfg := DefaultHTTPCfg
+	cfg := DefaultHTTPCfg()
 	cfg.ListenAddr = []string{path}
 
-	auth := &AuthConfig{
+	auth := AuthConfig{
 		BasicUser: "test",
 		BasicPass: "test",
 	}
@@ -91,10 +97,10 @@ func TestNewServerUnix(t *testing.T) {
 func TestNewServerHTTP(t *testing.T) {
 	ctx := context.Background()
 
-	cfg := DefaultHTTPCfg
+	cfg := DefaultHTTPCfg()
 	cfg.ListenAddr = []string{"127.0.0.1:0"}
 
-	auth := &AuthConfig{
+	auth := AuthConfig{
 		BasicUser: "test",
 		BasicPass: "test",
 	}
@@ -140,11 +146,79 @@ func TestNewServerHTTP(t *testing.T) {
 		testExpectRespBody(t, resp, expected)
 	})
 }
+func TestNewServerBaseURL(t *testing.T) {
+	servers := []struct {
+		name string
+		http HTTPConfig
+	}{
+		{
+			name: "Empty",
+			http: HTTPConfig{
+				ListenAddr: []string{"127.0.0.1:0"},
+				BaseURL:    "",
+			},
+		},
+		{
+			name: "Single/NoTrailingSlash",
+			http: HTTPConfig{
+				ListenAddr: []string{"127.0.0.1:0"},
+				BaseURL:    "/rclone",
+			},
+		},
+		{
+			name: "Single/TrailingSlash",
+			http: HTTPConfig{
+				ListenAddr: []string{"127.0.0.1:0"},
+				BaseURL:    "/rclone/",
+			},
+		},
+		{
+			name: "Multi/NoTrailingSlash",
+			http: HTTPConfig{
+				ListenAddr: []string{"127.0.0.1:0"},
+				BaseURL:    "/rclone/test/base/url",
+			},
+		},
+		{
+			name: "Multi/TrailingSlash",
+			http: HTTPConfig{
+				ListenAddr: []string{"127.0.0.1:0"},
+				BaseURL:    "/rclone/test/base/url/",
+			},
+		},
+	}
 
-func testReadTestdataFile(t *testing.T, path string) []byte {
-	data, err := os.ReadFile(filepath.Join("./testdata", path))
-	require.NoError(t, err, "")
-	return data
+	for _, ss := range servers {
+		t.Run(ss.name, func(t *testing.T) {
+			s, err := NewServer(context.Background(), WithConfig(ss.http))
+			require.NoError(t, err)
+			defer func() {
+				require.NoError(t, s.Shutdown())
+			}()
+
+			expected := []byte("data")
+			s.Router().Get("/", testEchoHandler(expected).ServeHTTP)
+			s.Serve()
+
+			url := testGetServerURL(t, s)
+			require.True(t, strings.HasPrefix(url, "http://"), "url should have http scheme")
+			require.True(t, strings.HasSuffix(url, ss.http.BaseURL), "url should include BaseURL")
+
+			client := &http.Client{}
+			req, err := http.NewRequest("GET", url, nil)
+			require.NoError(t, err)
+
+			resp, err := client.Do(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			t.Log(url, resp.Request.URL)
+
+			require.Equal(t, http.StatusOK, resp.StatusCode, "should return ok")
+
+			testExpectRespBody(t, resp, expected)
+		})
+	}
 }
 
 func TestNewServerTLS(t *testing.T) {
@@ -152,6 +226,7 @@ func TestNewServerTLS(t *testing.T) {
 	keyBytes := testReadTestdataFile(t, "local.key")
 
 	// TODO: generate a proper cert with SAN
+	// TODO: generate CA, test mTLS
 	// clientCert, err := tls.X509KeyPair(certBytes, keyBytes)
 	// require.NoError(t, err, "should be testing with a valid self signed certificate")
 
@@ -305,7 +380,7 @@ func TestNewServerTLS(t *testing.T) {
 
 	for _, ss := range servers {
 		t.Run(ss.name, func(t *testing.T) {
-			s, err := NewServer(context.Background(), WithConfig(&ss.http))
+			s, err := NewServer(context.Background(), WithConfig(ss.http))
 			if ss.wantErr == true {
 				if ss.err != nil {
 					require.ErrorIs(t, err, ss.err, "new server should return the expected error")

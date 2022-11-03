@@ -108,6 +108,9 @@ func testServer(t *testing.T, tests []testRun, opt *rc.Options) {
 	if err != nil {
 		t.Fatalf("failed to start rc server: %s", err)
 	}
+	defer func() {
+		require.NoError(t, rcServer.Shutdown())
+	}()
 	urls := rcServer.server.URLs()
 	require.Len(t, urls, 1)
 	server := urls[0]
@@ -130,7 +133,7 @@ func testServer(t *testing.T, tests []testRun, opt *rc.Options) {
 			if test.ContentType != "" {
 				req.Header.Add("Content-Type", test.ContentType)
 			}
-			if opt.Auth != nil && opt.Auth.BasicUser != "" && opt.Auth.BasicPass != "" {
+			if opt.Auth.BasicUser != "" && opt.Auth.BasicPass != "" {
 				req.SetBasicAuth(opt.Auth.BasicUser, opt.Auth.BasicPass)
 			}
 

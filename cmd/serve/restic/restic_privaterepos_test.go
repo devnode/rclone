@@ -8,17 +8,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rclone/rclone/cmd/serve/httplib"
-
 	"github.com/rclone/rclone/cmd"
-	"github.com/rclone/rclone/cmd/serve/httplib/httpflags"
+	libhttp "github.com/rclone/rclone/lib/http"
 	"github.com/stretchr/testify/require"
 )
 
 // newAuthenticatedRequest returns a new HTTP request with the given params.
 func newAuthenticatedRequest(t testing.TB, method, path string, body io.Reader) *http.Request {
 	req := newRequest(t, method, path, body)
-	req = req.WithContext(context.WithValue(req.Context(), httplib.ContextUserKey, "test"))
+	req = req.WithContext(libhttp.CtxSetUser(req.Context(), "test"))
 	req.Header.Add("Accept", resticAPIV2)
 	return req
 }
@@ -33,22 +31,18 @@ func TestResticPrivateRepositories(t *testing.T) {
 	tempdir := t.TempDir()
 
 	// globally set private-repos mode & test user
-	prev := privateRepos
-	prevUser := httpflags.Opt.BasicUser
-	prevPassword := httpflags.Opt.BasicPass
-	privateRepos = true
-	httpflags.Opt.BasicUser = "test"
-	httpflags.Opt.BasicPass = "password"
-	// reset when done
-	defer func() {
-		privateRepos = prev
-		httpflags.Opt.BasicUser = prevUser
-		httpflags.Opt.BasicPass = prevPassword
-	}()
+	opt := DefaultOpt
+	opt.PrivateRepos = true
+	opt.Auth.BasicUser = "test"
+	opt.Auth.BasicPass = "password"
 
 	// make a new file system in the temp dir
 	f := cmd.NewFsSrc([]string{tempdir})
-	srv := NewServer(f, &httpflags.Opt)
+	r, err := newRestic(context.Background(), f, opt)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, r.server.Shutdown())
+	}()
 
 	// Requesting /test/ should allow access
 	reqs := []*http.Request{
@@ -57,7 +51,7 @@ func TestResticPrivateRepositories(t *testing.T) {
 		newAuthenticatedRequest(t, "GET", "/test/config", nil),
 	}
 	for _, req := range reqs {
-		checkRequest(t, srv.ServeHTTP, req, []wantFunc{wantCode(http.StatusOK)})
+		checkRequest(t, r.ServeHTTP, req, []wantFunc{wantCode(http.StatusOK)})
 	}
 
 	// Requesting everything else should raise forbidden errors
@@ -67,7 +61,7 @@ func TestResticPrivateRepositories(t *testing.T) {
 		newAuthenticatedRequest(t, "GET", "/other_user/config", nil),
 	}
 	for _, req := range reqs {
-		checkRequest(t, srv.ServeHTTP, req, []wantFunc{wantCode(http.StatusForbidden)})
+		checkRequest(t, r.ServeHTTP, req, []wantFunc{wantCode(http.StatusForbidden)})
 	}
 
 }

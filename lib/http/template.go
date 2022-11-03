@@ -44,12 +44,19 @@ type TemplateConfig struct {
 	Path string
 }
 
-// AddFlags for the templating functionality
+// AddFlagsPrefix for the templating functionality
 func (cfg *TemplateConfig) AddFlagsPrefix(flagSet *pflag.FlagSet, prefix string) {
 	flags.StringVarP(flagSet, &cfg.Path, prefix+"template", "", cfg.Path, "User-specified template")
 }
 
-var DefaultTemplateCfg = &TemplateConfig{}
+// AddTemplateFlagsPrefix for the templating functionality
+func AddTemplateFlagsPrefix(flagSet *pflag.FlagSet, prefix string, cfg *TemplateConfig) {
+	cfg.AddFlagsPrefix(flagSet, prefix)
+}
+
+func DefaultTemplateCfg() TemplateConfig {
+	return TemplateConfig{}
+}
 
 // AfterEpoch returns the time since the epoch for the given time
 func AfterEpoch(t time.Time) bool {

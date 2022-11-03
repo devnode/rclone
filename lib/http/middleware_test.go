@@ -88,7 +88,7 @@ func TestMiddlewareAuth(t *testing.T) {
 
 	for _, ss := range servers {
 		t.Run(ss.name, func(t *testing.T) {
-			s, err := NewServer(context.Background(), WithConfig(&ss.http), WithAuth(&ss.auth))
+			s, err := NewServer(context.Background(), WithConfig(ss.http), WithAuth(ss.auth))
 			require.NoError(t, err)
 			defer func() {
 				require.NoError(t, s.Shutdown())
@@ -109,7 +109,7 @@ func TestMiddlewareAuth(t *testing.T) {
 				require.NoError(t, err)
 				defer resp.Body.Close()
 
-				require.Equal(t, http.StatusUnauthorized, resp.StatusCode, "using no basic auth creds should return unauthorized")
+				require.Equal(t, http.StatusUnauthorized, resp.StatusCode, "using no creds should return unauthorized")
 
 				wwwAuthHeader := resp.Header.Get("WWW-Authenticate")
 				require.NotEmpty(t, wwwAuthHeader, "resp should contain WWW-Authtentication header")
@@ -127,7 +127,7 @@ func TestMiddlewareAuth(t *testing.T) {
 				require.NoError(t, err)
 				defer resp.Body.Close()
 
-				require.Equal(t, http.StatusUnauthorized, resp.StatusCode, "using bad basic auth creds should return unauthorized")
+				require.Equal(t, http.StatusUnauthorized, resp.StatusCode, "using bad creds should return unauthorized")
 
 				wwwAuthHeader := resp.Header.Get("WWW-Authenticate")
 				require.NotEmpty(t, wwwAuthHeader, "resp should contain WWW-Authtentication header")
@@ -145,7 +145,7 @@ func TestMiddlewareAuth(t *testing.T) {
 				require.NoError(t, err)
 				defer resp.Body.Close()
 
-				require.Equal(t, http.StatusOK, resp.StatusCode, "using good basic auth creds should return ok")
+				require.Equal(t, http.StatusOK, resp.StatusCode, "using good creds should return ok")
 
 				testExpectRespBody(t, resp, expected)
 			})
@@ -183,7 +183,7 @@ func TestMiddlewareCORS(t *testing.T) {
 
 	for _, ss := range servers {
 		t.Run(ss.name, func(t *testing.T) {
-			s, err := NewServer(context.Background(), WithConfig(&ss.http))
+			s, err := NewServer(context.Background(), WithConfig(ss.http))
 			require.NoError(t, err)
 			defer func() {
 				require.NoError(t, s.Shutdown())
@@ -191,7 +191,7 @@ func TestMiddlewareCORS(t *testing.T) {
 
 			s.Router().Use(MiddlewareCORS(ss.origin))
 
-			expected := []byte("secret-page")
+			expected := []byte("data")
 			s.Router().Mount("/", testEchoHandler(expected))
 			s.Serve()
 

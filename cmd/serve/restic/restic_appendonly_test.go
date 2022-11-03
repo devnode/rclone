@@ -1,6 +1,7 @@
 package restic
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"io"
@@ -9,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/rclone/rclone/cmd"
-	"github.com/rclone/rclone/cmd/serve/httplib/httpflags"
 	"github.com/rclone/rclone/fs/config/configfile"
 	"github.com/stretchr/testify/require"
 )
@@ -69,13 +69,21 @@ func TestResticHandler(t *testing.T) {
 	randomID := hex.EncodeToString(buf)
 
 	var tests = []struct {
-		seq []TestRequest
+		name string
+		seq  []TestRequest
 	}{
-		{createOverwriteDeleteSeq(t, "/config")},
-		{createOverwriteDeleteSeq(t, "/data/"+randomID)},
+		{
+			name: "CreateOverwriteDeleteSeq/Config",
+			seq:  createOverwriteDeleteSeq(t, "/config"),
+		},
+		{
+			name: "CreateOverwriteDeleteSeq/Data/RandomID",
+			seq:  createOverwriteDeleteSeq(t, "/data/"+randomID),
+		},
 		{
 			// ensure we can add and remove lock files
-			[]TestRequest{
+			name: "AddRemoveLockFiles",
+			seq: []TestRequest{
 				{
 					req:  newRequest(t, "GET", "/locks/"+randomID, nil),
 					want: []wantFunc{wantCode(http.StatusNotFound)},
@@ -110,27 +118,27 @@ func TestResticHandler(t *testing.T) {
 	// setup rclone with a local backend in a temporary directory
 	tempdir := t.TempDir()
 
-	// globally set append-only mode
-	prev := appendOnly
-	appendOnly = true
-	defer func() {
-		appendOnly = prev // reset when done
-	}()
-
 	// make a new file system in the temp dir
 	f := cmd.NewFsSrc([]string{tempdir})
-	srv := NewServer(f, &httpflags.Opt)
+
+	opt := DefaultOpt
+	opt.AppendOnly = true
+	s, err := newRestic(context.Background(), f, opt)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, s.server.Shutdown())
+	}()
 
 	// create the repo
-	checkRequest(t, srv.ServeHTTP,
+	checkRequest(t, s.ServeHTTP,
 		newRequest(t, "POST", "/?create=true", nil),
 		[]wantFunc{wantCode(http.StatusOK)})
 
 	for _, test := range tests {
-		t.Run("", func(t *testing.T) {
+		t.Run(test.name, func(t *testing.T) {
 			for i, seq := range test.seq {
 				t.Logf("request %v: %v %v", i, seq.req.Method, seq.req.URL.Path)
-				checkRequest(t, srv.ServeHTTP, seq.req, seq.want)
+				checkRequest(t, s.ServeHTTP, seq.req, seq.want)
 			}
 		})
 	}

@@ -99,13 +99,20 @@ func (cfg *HTTPConfig) AddFlagsPrefix(flagSet *pflag.FlagSet, prefix string) {
 	flags.StringVarP(flagSet, &cfg.MinTLSVersion, prefix+"min-tls-version", "", cfg.MinTLSVersion, "Minimum TLS version that is acceptable")
 }
 
+// AddHTTPFlagsPrefix adds flags for the httplib
+func AddHTTPFlagsPrefix(flagSet *pflag.FlagSet, prefix string, cfg *HTTPConfig) {
+	cfg.AddFlagsPrefix(flagSet, prefix)
+}
+
 // DefaultHTTPCfg is the default values used for Config
-var DefaultHTTPCfg = &HTTPConfig{
-	ListenAddr:         []string{"127.0.0.1:8080"},
-	ServerReadTimeout:  1 * time.Hour,
-	ServerWriteTimeout: 1 * time.Hour,
-	MaxHeaderBytes:     4096,
-	MinTLSVersion:      "tls1.0",
+func DefaultHTTPCfg() HTTPConfig {
+	return HTTPConfig{
+		ListenAddr:         []string{"127.0.0.1:8080"},
+		ServerReadTimeout:  1 * time.Hour,
+		ServerWriteTimeout: 1 * time.Hour,
+		MaxHeaderBytes:     4096,
+		MinTLSVersion:      "tls1.0",
+	}
 }
 
 // Server interface of http server
@@ -126,14 +133,9 @@ type instance struct {
 
 func (s instance) serve(wg *sync.WaitGroup) {
 	defer wg.Done()
-	var err error
-	if s.httpServer.TLSConfig != nil {
-		err = s.httpServer.ServeTLS(s.listener, "", "")
-	} else {
-		err = s.httpServer.Serve(s.listener)
-	}
+	err := s.httpServer.Serve(s.listener)
 	if err != http.ErrServerClosed && err != nil {
-		log.Fatalf(err.Error())
+		log.Printf("%s: unexpected error: %s", s.listener.Addr(), err.Error())
 	}
 }
 
@@ -142,35 +144,29 @@ type server struct {
 	mux          chi.Router
 	tlsConfig    *tls.Config
 	instances    []instance
-	auth         *AuthConfig
-	cfg          *HTTPConfig
-	template     *TemplateConfig
+	auth         AuthConfig
+	cfg          HTTPConfig
+	template     TemplateConfig
 	htmlTemplate *template.Template
 }
 
 type Option func(*server)
 
-func WithAuth(cfg *AuthConfig) Option {
+func WithAuth(cfg AuthConfig) Option {
 	return func(s *server) {
-		if cfg != nil {
-			s.auth = cfg
-		}
+		s.auth = cfg
 	}
 }
 
-func WithConfig(cfg *HTTPConfig) Option {
+func WithConfig(cfg HTTPConfig) Option {
 	return func(s *server) {
-		if cfg != nil {
-			s.cfg = cfg
-		}
+		s.cfg = cfg
 	}
 }
 
-func WithTemplate(cfg *TemplateConfig) Option {
+func WithTemplate(cfg TemplateConfig) Option {
 	return func(s *server) {
-		if cfg != nil {
-			s.template = cfg
-		}
+		s.template = cfg
 	}
 }
 
@@ -181,7 +177,7 @@ func WithTemplate(cfg *TemplateConfig) Option {
 func NewServer(ctx context.Context, options ...Option) (*server, error) {
 	s := &server{
 		mux: chi.NewRouter(),
-		cfg: DefaultHTTPCfg,
+		cfg: DefaultHTTPCfg(),
 	}
 
 	for _, opt := range options {
@@ -230,7 +226,12 @@ func NewServer(ctx context.Context, options ...Option) (*server, error) {
 			addr = strings.TrimPrefix(addr, "tls://")
 		}
 
-		l, err := net.Listen(network, addr)
+		var listener net.Listener
+		if tlsCfg == nil {
+			listener, err = net.Listen(network, addr)
+		} else {
+			listener, err = tls.Listen(network, addr, tlsCfg)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -240,12 +241,12 @@ func NewServer(ctx context.Context, options ...Option) (*server, error) {
 			if tlsCfg != nil {
 				secure = "s"
 			}
-			url = fmt.Sprintf("http%s://%s%s/", secure, l.Addr().String(), s.cfg.BaseURL)
+			url = fmt.Sprintf("http%s://%s%s/", secure, listener.Addr().String(), s.cfg.BaseURL)
 		}
 
 		ii := instance{
 			url:      url,
-			listener: l,
+			listener: listener,
 			httpServer: &http.Server{
 				Handler:           s.mux,
 				ReadTimeout:       s.cfg.ServerReadTimeout,
@@ -265,10 +266,6 @@ func NewServer(ctx context.Context, options ...Option) (*server, error) {
 }
 
 func (s *server) initAuth() {
-	if s.auth == nil {
-		return
-	}
-
 	if s.auth.CustomAuthFn != nil {
 		s.mux.Use(MiddlewareAuthCustom(s.auth.CustomAuthFn, s.auth.Realm))
 		return
@@ -286,10 +283,6 @@ func (s *server) initAuth() {
 }
 
 func (s *server) initTemplate() error {
-	if s.template == nil {
-		return nil
-	}
-
 	var err error
 	s.htmlTemplate, err = GetTemplate(s.template.Path)
 	if err != nil {
@@ -303,6 +296,7 @@ var (
 	ErrInvalidMinTLSVersion = errors.New("invalid value for --min-tls-version")
 	ErrTLSBodyMismatch      = errors.New("need both TLSCertBody and TLSKeyBody to use TLS")
 	ErrTLSFileMismatch      = errors.New("need both --cert and --key to use TLS")
+	ErrTLSParseCA           = errors.New("unable to parse client certificate authority")
 )
 
 func (s *server) initTLS() error {
@@ -360,7 +354,7 @@ func (s *server) initTLS() error {
 		}
 
 		if !certpool.AppendCertsFromPEM(pem) {
-			return errors.New("unable to parse client certificate authority")
+			return ErrTLSParseCA
 		}
 
 		s.tlsConfig.ClientCAs = certpool
@@ -387,16 +381,6 @@ func (s *server) Wait() {
 func (s *server) Router() chi.Router {
 	return s.mux
 }
-
-// // Route mounts a sub-Router along a `pattern` string.
-// func (s *server) Route(pattern string, fn func(r chi.Router)) chi.Router {
-// 	return s.mux.Route(pattern, fn)
-// }
-
-// // Mount attaches another http.Handler along ./pattern/*
-// func (s *server) Mount(pattern string, h http.Handler) {
-// 	s.mux.Mount(pattern, h)
-// }
 
 // Shutdown gracefully shuts down the server
 func (s *server) Shutdown() error {

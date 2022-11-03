@@ -28,26 +28,27 @@ import (
 
 // Options required for http server
 type Options struct {
-	Auth     *libhttp.AuthConfig
-	HTTP     *libhttp.HTTPConfig
-	Template *libhttp.TemplateConfig
+	Auth     libhttp.AuthConfig
+	HTTP     libhttp.HTTPConfig
+	Template libhttp.TemplateConfig
 }
 
 // DefaultOpt is the default values used for Options
 var DefaultOpt = Options{
-	Auth:     libhttp.DefaultAuthCfg,
-	HTTP:     libhttp.DefaultHTTPCfg,
-	Template: libhttp.DefaultTemplateCfg,
+	Auth:     libhttp.DefaultAuthCfg(),
+	HTTP:     libhttp.DefaultHTTPCfg(),
+	Template: libhttp.DefaultTemplateCfg(),
 }
 
 // Opt is options set by command line flags
 var Opt = DefaultOpt
 
 func init() {
-	Opt.Auth.AddFlagsPrefix(Command.Flags(), "")
-	Opt.HTTP.AddFlagsPrefix(Command.Flags(), "")
-	Opt.Template.AddFlagsPrefix(Command.Flags(), "")
-	vfsflags.AddFlags(Command.Flags())
+	flagSet := Command.Flags()
+	libhttp.AddAuthFlagsPrefix(flagSet, "", &Opt.Auth)
+	libhttp.AddHTTPFlagsPrefix(flagSet, "", &Opt.HTTP)
+	libhttp.AddTemplateFlagsPrefix(flagSet, "", &Opt.Template)
+	vfsflags.AddFlags(flagSet)
 }
 
 // Command definition for cobra

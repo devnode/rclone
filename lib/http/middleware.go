@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -12,47 +11,6 @@ import (
 	goauth "github.com/abbot/go-http-auth"
 	"github.com/rclone/rclone/fs"
 )
-
-type CtxKey string
-
-var (
-	ContextAuthKey       CtxKey = "ContextAuthKey"
-	ContextUnixSocketKey CtxKey = "ContextUnixSocketKey"
-	ContentPublicURLKey  CtxKey = "ContentPublicURLKey"
-	ContextUserKey       CtxKey = "ContextUserKey"
-)
-
-func NewBaseContext(ctx context.Context, url string) func(l net.Listener) context.Context {
-	return func(l net.Listener) context.Context {
-		if l.Addr().Network() == "unix" {
-			ctx = context.WithValue(ctx, ContextUnixSocketKey, true)
-			return ctx
-		}
-
-		ctx = context.WithValue(ctx, ContentPublicURLKey, url)
-		return ctx
-	}
-}
-
-func IsAuthenticated(r *http.Request) bool {
-	if v := r.Context().Value(ContextAuthKey); v != nil {
-		return true
-	}
-	if v := r.Context().Value(ContextUserKey); v != nil {
-		return true
-	}
-	return false
-}
-
-func IsUnixSocket(r *http.Request) bool {
-	v, _ := r.Context().Value(ContextUnixSocketKey).(bool)
-	return v
-}
-
-func PublicURL(r *http.Request) string {
-	v, _ := r.Context().Value(ContentPublicURLKey).(string)
-	return v
-}
 
 // parseAuthorization parses the Authorization header into user, pass
 // it returns a boolean as to whether the parse was successful
@@ -109,7 +67,7 @@ func basicAuth(authenticator *LoggedBasicAuth) func(next http.Handler) http.Hand
 				authenticator.RequireAuth(w, r)
 				return
 			}
-			ctx := context.WithValue(r.Context(), ContextUserKey, username)
+			ctx := context.WithValue(r.Context(), ctxKeyUser, username)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -164,7 +122,7 @@ func MiddlewareAuthCustom(fn CustomAuthFn, realm string) Middleware {
 			}
 
 			if value != nil {
-				r = r.WithContext(context.WithValue(r.Context(), ContextAuthKey, value))
+				r = r.WithContext(context.WithValue(r.Context(), ctxKeyAuth, value))
 			}
 
 			next.ServeHTTP(w, r)

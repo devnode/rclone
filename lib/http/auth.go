@@ -58,14 +58,14 @@ func (cfg *AuthConfig) AddFlagsPrefix(flagSet *pflag.FlagSet, prefix string) {
 	flags.StringVarP(flagSet, &cfg.Salt, prefix+"salt", "", cfg.Salt, "Password hashing salt")
 }
 
+// AddFAuthlagsPrefix adds flags for http/auth
+func AddAuthFlagsPrefix(flagSet *pflag.FlagSet, prefix string, cfg *AuthConfig) {
+	cfg.AddFlagsPrefix(flagSet, prefix)
+}
+
 // AuthConfig set by command line flags
-var (
-	DefaultAuthCfg = &AuthConfig{
+func DefaultAuthCfg() AuthConfig {
+	return AuthConfig{
 		Salt: "dlPL2MqE",
 	}
-)
-
-// AddFlags adds flags for the http/auth
-func AddAuthFlags(flagSet *pflag.FlagSet) {
-	DefaultAuthCfg.AddFlagsPrefix(flagSet, "")
 }
